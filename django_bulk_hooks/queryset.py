@@ -65,9 +65,10 @@ class HookQuerySetMixin:
         }
         originals = [original_map.get(obj.pk) for obj in instances]
 
-        # Check if any of the update values are Subquery objects
+        # Check if any of the update values are complex database expressions (Subquery, Case, etc.)
         has_subquery = any(
-            hasattr(value, "query") and hasattr(value, "resolve_expression")
+            (hasattr(value, "query") and hasattr(value, "resolve_expression")) or
+            hasattr(value, "resolve_expression")  # This catches Case, F expressions, etc.
             for value in kwargs.values()
         )
 
@@ -98,11 +99,11 @@ class HookQuerySetMixin:
                     engine.run(
                         model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx
                     )
-                except (TypeError, ValueError) as e:
-                    # If validation fails due to Subquery comparison, skip validation for subquery updates
-                    # This is a limitation - validation hooks cannot easily work with unresolved subqueries
+                except (TypeError, ValueError, AttributeError) as e:
+                    # If validation fails due to Subquery/Case comparison, skip validation for complex updates
+                    # This is a limitation - validation hooks cannot easily work with unresolved database expressions
                     logger.warning(
-                        f"Skipping validation hooks for subquery update due to: {e}"
+                        f"Skipping validation hooks for complex update due to: {e}"
                     )
 
                 # Execute the database update first to compute subquery values

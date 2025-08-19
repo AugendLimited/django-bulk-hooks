@@ -68,6 +68,7 @@ class HookModelMixin(models.Model):
             logger.debug(f"save() creating new {self.__class__.__name__} instance")
             # For create operations, we don't have old records
             ctx = HookContext(self.__class__)
+            run(self.__class__, VALIDATE_CREATE, [self], ctx=ctx)
             run(self.__class__, BEFORE_CREATE, [self], ctx=ctx)
 
             super().save(*args, **kwargs)
@@ -80,6 +81,7 @@ class HookModelMixin(models.Model):
                 # Use _base_manager to avoid triggering hooks recursively
                 old_instance = self.__class__._base_manager.get(pk=self.pk)
                 ctx = HookContext(self.__class__)
+                run(self.__class__, VALIDATE_UPDATE, [self], [old_instance], ctx=ctx)
                 run(self.__class__, BEFORE_UPDATE, [self], [old_instance], ctx=ctx)
 
                 super().save(*args, **kwargs)
@@ -88,6 +90,7 @@ class HookModelMixin(models.Model):
             except self.__class__.DoesNotExist:
                 # If the old instance doesn't exist, treat as create
                 ctx = HookContext(self.__class__)
+                run(self.__class__, VALIDATE_CREATE, [self], ctx=ctx)
                 run(self.__class__, BEFORE_CREATE, [self], ctx=ctx)
 
                 super().save(*args, **kwargs)

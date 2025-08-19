@@ -36,6 +36,7 @@ def pytest_configure():
         from tests.test_error_handling import ErrorTestModel, RelatedErrorModel
         from tests.test_multiple_inheritance import MultiInheritanceTestModel, DailyLoanSummaryMockModel
         from tests.test_priority_and_ordering import OrderedTestModel
+        from tests.test_registry_and_decorators import RegistryTestModel
         from tests.test_subquery_hooks import RelatedModel, TestModel, User
 
         # Create User model first (it's referenced by others)
@@ -64,3 +65,6 @@ def pytest_configure():
         # Create test models from multiple inheritance tests
         schema_editor.create_model(MultiInheritanceTestModel)
         schema_editor.create_model(DailyLoanSummaryMockModel)
+        
+        # Create test models from registry tests
+        schema_editor.create_model(RegistryTestModel)
