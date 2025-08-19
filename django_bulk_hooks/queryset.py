@@ -67,10 +67,25 @@ class HookQuerySetMixin:
 
         # Check if any of the update values are complex database expressions (Subquery, Case, etc.)
         has_subquery = any(
-            (hasattr(value, "query") and hasattr(value, "resolve_expression")) or
-            hasattr(value, "resolve_expression")  # This catches Case, F expressions, etc.
+            (hasattr(value, "query") and hasattr(value, "resolve_expression"))
+            or hasattr(
+                value, "resolve_expression"
+            )  # This catches Case, F expressions, etc.
             for value in kwargs.values()
         )
+        
+        # Also check if any of the instances have complex expressions in their attributes
+        # This can happen when bulk_update creates Case expressions and applies them to instances
+        if not has_subquery and instances:
+            for instance in instances:
+                for field_name in kwargs.keys():
+                    if hasattr(instance, field_name):
+                        field_value = getattr(instance, field_name)
+                        if hasattr(field_value, "resolve_expression"):
+                            has_subquery = True
+                            break
+                if has_subquery:
+                    break
 
         # Check if we're in a bulk operation context to prevent double hook execution
         from django_bulk_hooks.context import get_bypass_hooks

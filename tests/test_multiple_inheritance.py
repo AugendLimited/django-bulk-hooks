@@ -455,11 +455,59 @@ class EdgeCasesMultipleInheritanceTestCase(TestCase):
             else:
                 raise
 
-        # Verify the subquery was resolved correctly
+                # Verify the subquery was resolved correctly
         obj1.refresh_from_db()
         self.assertEqual(
-            obj1.cumulative_repayment, Decimal("80.00")
-        )  # Should have obj2's value
+             obj1.cumulative_repayment, Decimal("80.00")
+         )  # Should have obj2's value
+
+    def test_bulk_update_with_queryable_properties(self):
+        """Test that bulk_update works with queryable properties (reproduces production error scenario)."""
+        
+        # Create a hook that accesses queryable properties during bulk_update
+        class BulkUpdatePropertyHook(Hook):
+            @hook(BEFORE_UPDATE, model=DailyLoanSummaryMockModel)
+            def access_repayment_efficiency(self, new_records, old_records):
+                for record in new_records:
+                    # This should not fail with AttributeError: 'CombinedExpression' object has no attribute 'quantize'
+                    efficiency = record.repayment_efficiency()  # This calls .quantize()
+                    multi_inheritance_state["hook_calls"].append("bulk_update_property_accessed")
+                    multi_inheritance_state["processed_values"].append(efficiency)
+        
+        bulk_hook = BulkUpdatePropertyHook()
+        
+        # Create test data 
+        obj1 = DailyLoanSummaryMockModel.objects.create(
+            cumulative_repayment=Decimal("100.00"),
+            cumulative_repayment_forecast=Decimal("150.00"),
+        )
+        obj2 = DailyLoanSummaryMockModel.objects.create(
+            cumulative_repayment=Decimal("80.00"),
+            cumulative_repayment_forecast=Decimal("100.00"),
+        )
+        
+        reset_multi_inheritance_state()
+        
+        # Modify the objects (this creates the bulk_update scenario)
+        obj1.cumulative_repayment = Decimal("75.00")
+        obj2.cumulative_repayment = Decimal("90.00")
+        
+        # This should NOT raise AttributeError: 'CombinedExpression' object has no attribute 'quantize'
+        # The enhanced complex expression detection should handle this
+        try:
+            DailyLoanSummaryMockModel.objects.bulk_update([obj1, obj2], ['cumulative_repayment'])
+        except AttributeError as e:
+            if 'quantize' in str(e):
+                self.fail(f"CombinedExpression error still occurring: {e}")
+            else:
+                raise
+        
+        # Verify hooks were called successfully
+        self.assertIn("bulk_update_property_accessed", multi_inheritance_state["hook_calls"])
+        
+        # Verify values were computed correctly
+        computed_values = multi_inheritance_state["processed_values"]
+        self.assertTrue(len(computed_values) >= 2)  # Should have efficiency values
 
     def test_multiple_manager_registration(self):
         """Test that multiple managers can coexist."""
