@@ -68,7 +68,47 @@ class RegistryTestCase(TestCase):
     def setUp(self):
         """Set up test data."""
         reset_registry_state()
+
+        # Clear the global hook registry and manually register test hooks
+        from django_bulk_hooks.conditions import HasChanged
+        from django_bulk_hooks.constants import (
+            AFTER_CREATE,
+            BEFORE_CREATE,
+            BEFORE_UPDATE,
+        )
+        from django_bulk_hooks.priority import Priority
+        from django_bulk_hooks.registry import _hooks, register_hook
+
+        _hooks.clear()
+
         self.user = User.objects.create_user(username="testuser")
+
+        # Manually register the BasicRegistryHooks
+        register_hook(
+            RegistryTestModel,
+            BEFORE_CREATE,
+            BasicRegistryHooks,
+            "before_create_basic",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            RegistryTestModel,
+            AFTER_CREATE,
+            BasicRegistryHooks,
+            "after_create_high",
+            None,
+            Priority.HIGH,
+        )
+        register_hook(
+            RegistryTestModel,
+            BEFORE_UPDATE,
+            BasicRegistryHooks,
+            "before_update_conditional",
+            HasChanged("value"),
+            Priority.NORMAL,
+        )
+
         self.hooks = BasicRegistryHooks()
 
     def test_hook_registration(self):
@@ -269,6 +309,12 @@ class DecoratorTestCase(TestCase):
     def setUp(self):
         """Set up test data."""
         reset_registry_state()
+
+        # Clear the global hook registry for clean slate
+        from django_bulk_hooks.registry import _hooks
+
+        _hooks.clear()
+
         self.user = User.objects.create_user(username="testuser")
 
     def test_hook_decorator_basic(self):
@@ -447,6 +493,11 @@ class RegistryEdgeCasesTestCase(TestCase):
     def setUp(self):
         """Set up test data."""
         reset_registry_state()
+
+        # Clear the global hook registry for clean slate
+        from django_bulk_hooks.registry import _hooks
+
+        _hooks.clear()
 
     def test_registry_with_duplicate_registrations(self):
         """Test registry behavior with duplicate hook registrations."""
