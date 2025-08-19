@@ -73,7 +73,7 @@ class HookQuerySetMixin:
             )  # This catches Case, F expressions, etc.
             for value in kwargs.values()
         )
-        
+
         # Also check if any of the instances have complex expressions in their attributes
         # This can happen when bulk_update creates Case expressions and applies them to instances
         if not has_subquery and instances:
@@ -335,6 +335,30 @@ class HookQuerySetMixin:
             logger.debug("bulk_update: hooks bypassed")
 
         return result
+
+    @transaction.atomic
+    def bulk_delete(self, objs, **kwargs):
+        """
+        Delete the given objects from the database with hook support.
+
+        This is a convenience method that provides a bulk_delete interface
+        similar to bulk_create and bulk_update.
+        """
+        logger.debug(f"bulk_delete called with {len(objs)} objects")
+
+        # Extract custom kwargs
+        bypass_hooks = kwargs.pop("bypass_hooks", False)
+
+        if not objs:
+            return 0
+
+        # Get the pks to delete
+        pks = [obj.pk for obj in objs if obj.pk is not None]
+        if not pks:
+            return 0
+
+        # Use the delete() method which already has hook support
+        return self.filter(pk__in=pks).delete()
 
     def _detect_modified_fields(self, new_instances, original_instances):
         """

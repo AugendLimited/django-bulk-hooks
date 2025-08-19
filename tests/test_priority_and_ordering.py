@@ -117,6 +117,13 @@ class PriorityOrderingTestCase(TestCase):
     def setUp(self):
         """Set up test data."""
         reset_execution_order()
+        
+        # Clear the global hook registry and metaclass registration cache
+        from django_bulk_hooks.registry import _hooks
+        from django_bulk_hooks.handler import HookMeta
+        _hooks.clear()
+        HookMeta._registered.clear()
+        
         self.user = User.objects.create_user(username='testuser')
         
         # Register all hook classes
