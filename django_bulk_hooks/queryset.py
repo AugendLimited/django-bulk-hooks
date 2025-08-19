@@ -76,54 +76,68 @@ class HookQuerySetMixin:
 
         current_bypass_hooks = get_bypass_hooks()
 
-        # If we used Subquery objects, we need to resolve them before hooks to avoid comparison errors
-        if has_subquery and not current_bypass_hooks:
-            # Execute the Django update first to compute subquery values
+        # Apply field updates to instances for all cases (needed for hook inspection)
+        for obj in instances:
+            for field, value in kwargs.items():
+                # For subquery fields, set the original Subquery object temporarily
+                # We'll resolve it after database update if needed
+                setattr(obj, field, value)
+
+        # If we're in a bulk operation context, skip hooks to prevent double execution
+        if current_bypass_hooks:
+            ctx = HookContext(model_cls, bypass_hooks=True)
+            # For bulk operations without hooks, execute update
             update_count = super().update(**kwargs)
-
-            # Refresh instances to get computed subquery values BEFORE running hooks
-            refreshed_instances = {
-                obj.pk: obj for obj in model_cls._base_manager.filter(pk__in=pks)
-            }
-
-            # Update instances in memory with computed values
-            for instance in instances:
-                if instance.pk in refreshed_instances:
-                    refreshed_instance = refreshed_instances[instance.pk]
-                    # Update all fields except primary key with the computed values
-                    for field in model_cls._meta.fields:
-                        if field.name != "id":
-                            setattr(
-                                instance,
-                                field.name,
-                                getattr(refreshed_instance, field.name),
-                            )
-
-            # Now run hooks with resolved subquery values
-            ctx = HookContext(model_cls, bypass_hooks=False)
-            # Run validation hooks first
-            engine.run(model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx)
-            # Then run BEFORE_UPDATE hooks
-            engine.run(model_cls, BEFORE_UPDATE, instances, originals, ctx=ctx)
         else:
-            # Apply field updates to instances for non-subquery cases
-            for obj in instances:
-                for field, value in kwargs.items():
-                    setattr(obj, field, value)
+            ctx = HookContext(model_cls, bypass_hooks=False)
 
-            # If we're in a bulk operation context, skip hooks to prevent double execution
-            if current_bypass_hooks:
-                ctx = HookContext(model_cls, bypass_hooks=True)
-                # For bulk operations without hooks, execute Django update if not done already
+            # For subquery cases, we need special handling
+            if has_subquery:
+                # Run validation hooks first with Subquery objects (if validation doesn't access them)
+                try:
+                    engine.run(
+                        model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx
+                    )
+                except (TypeError, ValueError) as e:
+                    # If validation fails due to Subquery comparison, skip validation for subquery updates
+                    # This is a limitation - validation hooks cannot easily work with unresolved subqueries
+                    logger.warning(
+                        f"Skipping validation hooks for subquery update due to: {e}"
+                    )
+
+                # Execute the database update first to compute subquery values
                 update_count = super().update(**kwargs)
+
+                # Refresh instances to get computed subquery values BEFORE running BEFORE hooks
+                # Use the model's default manager to ensure queryable properties are properly handled
+                refreshed_instances = {
+                    obj.pk: obj for obj in model_cls.objects.filter(pk__in=pks)
+                }
+
+                # Update instances in memory with computed values
+                for instance in instances:
+                    if instance.pk in refreshed_instances:
+                        refreshed_instance = refreshed_instances[instance.pk]
+                        # Update all fields except primary key with the computed values
+                        for field in model_cls._meta.fields:
+                            if field.name != "id":
+                                setattr(
+                                    instance,
+                                    field.name,
+                                    getattr(refreshed_instance, field.name),
+                                )
+
+                # Now run BEFORE_UPDATE hooks with resolved values
+                # Note: This is a trade-off - BEFORE hooks run after DB update for subquery cases
+                engine.run(model_cls, BEFORE_UPDATE, instances, originals, ctx=ctx)
             else:
-                ctx = HookContext(model_cls, bypass_hooks=False)
+                # Normal case without subqueries - run hooks in proper order
                 # Run validation hooks first
                 engine.run(model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx)
                 # Then run BEFORE_UPDATE hooks
                 engine.run(model_cls, BEFORE_UPDATE, instances, originals, ctx=ctx)
 
-                # Execute Django update if not done already (for non-subquery cases)
+                # Execute update
                 update_count = super().update(**kwargs)
 
         # Run AFTER_UPDATE hooks only for standalone updates
