@@ -1,4 +1,5 @@
 import logging
+
 from django.db import models, transaction
 from django.db.models import AutoField, Case, Field, Value, When
 
@@ -70,44 +71,26 @@ class HookQuerySetMixin:
             for value in kwargs.values()
         )
 
-        # Apply field updates to instances
-        for obj in instances:
-            for field, value in kwargs.items():
-                setattr(obj, field, value)
-
         # Check if we're in a bulk operation context to prevent double hook execution
         from django_bulk_hooks.context import get_bypass_hooks
+
         current_bypass_hooks = get_bypass_hooks()
-        
-        # If we're in a bulk operation context, skip hooks to prevent double execution
-        if current_bypass_hooks:
-            logger.debug("update: skipping hooks (bulk context)")
-            ctx = HookContext(model_cls, bypass_hooks=True)
-        else:
-            logger.debug("update: running hooks (standalone)")
-            ctx = HookContext(model_cls, bypass_hooks=False)
-            # Run validation hooks first
-            engine.run(model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx)
-            # Then run BEFORE_UPDATE hooks
-            engine.run(model_cls, BEFORE_UPDATE, instances, originals, ctx=ctx)
 
-        # Use Django's built-in update logic directly
-        # Call the base QuerySet implementation to avoid recursion
-        update_count = super().update(**kwargs)
+        # If we used Subquery objects, we need to resolve them before hooks to avoid comparison errors
+        if has_subquery and not current_bypass_hooks:
+            # Execute the Django update first to compute subquery values
+            update_count = super().update(**kwargs)
 
-        # If we used Subquery objects, refresh the instances to get computed values
-        if has_subquery and instances:
-            # Simple refresh of model fields without fetching related objects
-            # Subquery updates only affect the model's own fields, not relationships
+            # Refresh instances to get computed subquery values BEFORE running hooks
             refreshed_instances = {
                 obj.pk: obj for obj in model_cls._base_manager.filter(pk__in=pks)
             }
 
-            # Bulk update all instances in memory
+            # Update instances in memory with computed values
             for instance in instances:
                 if instance.pk in refreshed_instances:
                     refreshed_instance = refreshed_instances[instance.pk]
-                    # Update all fields except primary key
+                    # Update all fields except primary key with the computed values
                     for field in model_cls._meta.fields:
                         if field.name != "id":
                             setattr(
@@ -116,12 +99,36 @@ class HookQuerySetMixin:
                                 getattr(refreshed_instance, field.name),
                             )
 
+            # Now run hooks with resolved subquery values
+            ctx = HookContext(model_cls, bypass_hooks=False)
+            # Run validation hooks first
+            engine.run(model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx)
+            # Then run BEFORE_UPDATE hooks
+            engine.run(model_cls, BEFORE_UPDATE, instances, originals, ctx=ctx)
+        else:
+            # Apply field updates to instances for non-subquery cases
+            for obj in instances:
+                for field, value in kwargs.items():
+                    setattr(obj, field, value)
+
+            # If we're in a bulk operation context, skip hooks to prevent double execution
+            if current_bypass_hooks:
+                ctx = HookContext(model_cls, bypass_hooks=True)
+                # For bulk operations without hooks, execute Django update if not done already
+                update_count = super().update(**kwargs)
+            else:
+                ctx = HookContext(model_cls, bypass_hooks=False)
+                # Run validation hooks first
+                engine.run(model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx)
+                # Then run BEFORE_UPDATE hooks
+                engine.run(model_cls, BEFORE_UPDATE, instances, originals, ctx=ctx)
+
+                # Execute Django update if not done already (for non-subquery cases)
+                update_count = super().update(**kwargs)
+
         # Run AFTER_UPDATE hooks only for standalone updates
         if not current_bypass_hooks:
-            logger.debug("update: running AFTER_UPDATE")
             engine.run(model_cls, AFTER_UPDATE, instances, originals, ctx=ctx)
-        else:
-            logger.debug("update: skipping AFTER_UPDATE (bulk context)")
 
         return update_count
 
@@ -180,12 +187,12 @@ class HookQuerySetMixin:
 
         # Fire hooks before DB ops
         if not bypass_hooks:
-            ctx = HookContext(model_cls, bypass_hooks=False) # Pass bypass_hooks
+            ctx = HookContext(model_cls, bypass_hooks=False)  # Pass bypass_hooks
             if not bypass_validation:
                 engine.run(model_cls, VALIDATE_CREATE, objs, ctx=ctx)
             engine.run(model_cls, BEFORE_CREATE, objs, ctx=ctx)
         else:
-            ctx = HookContext(model_cls, bypass_hooks=True) # Pass bypass_hooks
+            ctx = HookContext(model_cls, bypass_hooks=True)  # Pass bypass_hooks
             logger.debug("bulk_create bypassed hooks")
 
         # For MTI models, we need to handle them specially
@@ -241,7 +248,9 @@ class HookQuerySetMixin:
                 f"bulk_update expected instances of {model_cls.__name__}, but got {set(type(obj).__name__ for obj in objs)}"
             )
 
-        logger.debug(f"bulk_update {model_cls.__name__} bypass_hooks={bypass_hooks} objs={len(objs)}")
+        logger.debug(
+            f"bulk_update {model_cls.__name__} bypass_hooks={bypass_hooks} objs={len(objs)}"
+        )
 
         # Check for MTI
         is_mti = False
@@ -257,7 +266,9 @@ class HookQuerySetMixin:
         else:
             logger.debug("bulk_update: hooks bypassed")
             ctx = HookContext(model_cls, bypass_hooks=True)
-            originals = [None] * len(objs)  # Ensure originals is defined for after_update call
+            originals = [None] * len(
+                objs
+            )  # Ensure originals is defined for after_update call
 
         # Handle auto_now fields like Django's update_or_create does
         fields_set = set(fields)
