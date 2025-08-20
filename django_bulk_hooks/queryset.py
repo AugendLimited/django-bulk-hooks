@@ -1,6 +1,6 @@
 import logging
 
-from django.db import models, transaction
+from django.db import models, transaction, connections
 from django.db.models import AutoField, Case, Value, When
 from django_bulk_hooks import engine
 from django_bulk_hooks.constants import (
@@ -26,7 +26,7 @@ class HookQuerySetMixin:
     """
 
     @transaction.atomic
-    def delete(self):
+    def delete(self) -> int:
         """
         Delete objects from the database with complete hook support.
 
@@ -61,7 +61,7 @@ class HookQuerySetMixin:
         return result
 
     @transaction.atomic
-    def update(self, **kwargs):
+    def update(self, **kwargs) -> int:
         """
         Update objects with field values and run complete hook cycle.
         
@@ -72,6 +72,7 @@ class HookQuerySetMixin:
         """
         # Extract custom parameters
         bypass_hooks = kwargs.pop('bypass_hooks', False)
+        bypass_validation = kwargs.pop('bypass_validation', False)
         
         instances = list(self)
         if not instances:
@@ -107,7 +108,8 @@ class HookQuerySetMixin:
         if not bypass_hooks:
             ctx = HookContext(model_cls)
             # Run VALIDATE_UPDATE hooks
-            engine.run(model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx)
+            if not bypass_validation:
+                engine.run(model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx)
 
             # Resolve complex expressions in one shot per field and apply values
             if has_subquery:
@@ -190,7 +192,7 @@ class HookQuerySetMixin:
         unique_fields=None,
         bypass_hooks=False,
         bypass_validation=False,
-    ):
+    ) -> list:
         """
         Insert each of the instances into the database with complete hook support.
 
@@ -278,7 +280,7 @@ class HookQuerySetMixin:
     @transaction.atomic
     def bulk_update(
         self, objs, fields, bypass_hooks=False, bypass_validation=False, **kwargs
-    ):
+    ) -> int:
         """
         Bulk update objects in the database with complete hook support.
 
@@ -364,7 +366,7 @@ class HookQuerySetMixin:
         return result
 
     @transaction.atomic
-    def bulk_delete(self, objs, **kwargs):
+    def bulk_delete(self, objs, **kwargs) -> int:
         """
         Delete the given objects from the database with complete hook support.
 
@@ -377,7 +379,7 @@ class HookQuerySetMixin:
         model_cls = self.model
 
         # Extract custom kwargs
-        bypass_hooks = kwargs.pop("bypass_hooks", False)
+        kwargs.pop("bypass_hooks", False)
 
         # Validate inputs
         if not isinstance(objs, (list, tuple)):
@@ -502,50 +504,83 @@ class HookQuerySetMixin:
         # Then we can use Django's bulk_create for the child objects
         parent_objects_map = {}
 
-        # Step 1: Do O(n) normal inserts into parent tables to get primary keys back
-        # Get bypass_hooks from kwargs
+        # Step 1: Insert into parent tables to get primary keys back
         bypass_hooks = kwargs.get("bypass_hooks", False)
         bypass_validation = kwargs.get("bypass_validation", False)
 
-        for obj in batch:
-            parent_instances = {}
-            current_parent = None
-            for model_class in inheritance_chain[:-1]:
-                parent_obj = self._create_parent_instance(
-                    obj, model_class, current_parent
-                )
+        # If DB supports returning rows from bulk insert, batch per parent model
+        supports_returning = connections[self.db].features.can_return_rows_from_bulk_insert
 
-                # Fire parent hooks if not bypassed
+        if supports_returning:
+            # For each parent level in the chain, create instances in batch preserving order
+            current_parents_per_obj = {id(obj): None for obj in batch}
+            for model_class in inheritance_chain[:-1]:
+                parent_objs = [
+                    self._create_parent_instance(obj, model_class, current_parents_per_obj[id(obj)])
+                    for obj in batch
+                ]
+
                 if not bypass_hooks:
                     ctx = HookContext(model_class)
                     if not bypass_validation:
-                        engine.run(model_class, VALIDATE_CREATE, [parent_obj], ctx=ctx)
-                    engine.run(model_class, BEFORE_CREATE, [parent_obj], ctx=ctx)
+                        engine.run(model_class, VALIDATE_CREATE, parent_objs, ctx=ctx)
+                    engine.run(model_class, BEFORE_CREATE, parent_objs, ctx=ctx)
 
-                # Use Django's base manager to create the object and get PKs back
-                # This bypasses hooks and the MTI exception
-                field_values = {
-                    field.name: getattr(parent_obj, field.name)
-                    for field in model_class._meta.local_fields
-                    if hasattr(parent_obj, field.name)
-                    and getattr(parent_obj, field.name) is not None
-                }
-                created_obj = model_class._base_manager.using(self.db).create(
-                    **field_values
+                # Bulk insert parents using base manager to avoid hook recursion
+                created_parents = model_class._base_manager.using(self.db).bulk_create(
+                    parent_objs, batch_size=len(parent_objs)
                 )
 
-                # Update the parent_obj with the created object's PK
-                parent_obj.pk = created_obj.pk
-                parent_obj._state.adding = False
-                parent_obj._state.db = self.db
-
-                # Fire AFTER_CREATE hooks for parent
+                # After create hooks
                 if not bypass_hooks:
-                    engine.run(model_class, AFTER_CREATE, [parent_obj], ctx=ctx)
+                    engine.run(model_class, AFTER_CREATE, created_parents, ctx=ctx)
 
-                parent_instances[model_class] = parent_obj
-                current_parent = parent_obj
-            parent_objects_map[id(obj)] = parent_instances
+                # Update maps and state for next parent level
+                for obj, parent_obj in zip(batch, created_parents):
+                    # Ensure state reflects saved
+                    parent_obj._state.adding = False
+                    parent_obj._state.db = self.db
+                    # Record for this object and level
+                    if id(obj) not in parent_objects_map:
+                        parent_objects_map[id(obj)] = {}
+                    parent_objects_map[id(obj)][model_class] = parent_obj
+                    current_parents_per_obj[id(obj)] = parent_obj
+        else:
+            # Fallback: per-row parent inserts (original behavior)
+            for obj in batch:
+                parent_instances = {}
+                current_parent = None
+                for model_class in inheritance_chain[:-1]:
+                    parent_obj = self._create_parent_instance(
+                        obj, model_class, current_parent
+                    )
+
+                    if not bypass_hooks:
+                        ctx = HookContext(model_class)
+                        if not bypass_validation:
+                            engine.run(model_class, VALIDATE_CREATE, [parent_obj], ctx=ctx)
+                        engine.run(model_class, BEFORE_CREATE, [parent_obj], ctx=ctx)
+
+                    field_values = {
+                        field.name: getattr(parent_obj, field.name)
+                        for field in model_class._meta.local_fields
+                        if hasattr(parent_obj, field.name)
+                        and getattr(parent_obj, field.name) is not None
+                    }
+                    created_obj = model_class._base_manager.using(self.db).create(
+                        **field_values
+                    )
+
+                    parent_obj.pk = created_obj.pk
+                    parent_obj._state.adding = False
+                    parent_obj._state.db = self.db
+
+                    if not bypass_hooks:
+                        engine.run(model_class, AFTER_CREATE, [parent_obj], ctx=ctx)
+
+                    parent_instances[model_class] = parent_obj
+                    current_parent = parent_obj
+                parent_objects_map[id(obj)] = parent_instances
 
         # Step 2: Create all child objects and do single bulk insert into childmost table
         child_model = inheritance_chain[-1]
@@ -771,7 +806,8 @@ class HookQuerySetMixin:
         # For MTI, we need to handle parent links correctly
         # The root model (first in chain) has its own PK
         # Child models use the parent link to reference the root PK
-        root_model = inheritance_chain[0]
+        # Root model (first in chain) has its own PK; kept for clarity
+        # root_model = inheritance_chain[0]
 
         # Get the primary keys from the objects
         # If objects have pk set but are not loaded from DB, use those PKs
@@ -855,7 +891,7 @@ class HookQuerySetMixin:
                         **{f"{filter_field}__in": pks}
                     ).update(**case_statements)
                     total_updated += updated_count
-                except Exception as e:
+                except Exception:
                     import traceback
 
                     traceback.print_exc()

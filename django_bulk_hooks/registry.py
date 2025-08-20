@@ -1,7 +1,8 @@
 import logging
 import threading
 from collections.abc import Callable
-from typing import Dict, List, Optional, Tuple, Union
+from contextlib import contextmanager
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 from django_bulk_hooks.priority import Priority
 
@@ -134,3 +135,63 @@ def unregister_hook(model: type, event: str, handler_cls: type, method_name: str
         ]
         if not _hooks[key]:
             del _hooks[key]
+
+
+@contextmanager
+def isolated_registry() -> Iterator[None]:
+    """
+    Context manager that snapshots the hook registry and restores it on exit.
+
+    Useful for tests to avoid global cross-test interference without relying on
+    private state mutation from the outside.
+    """
+    with _lock:
+        snapshot = {k: list(v) for k, v in _hooks.items()}
+    try:
+        yield
+    finally:
+        with _lock:
+            _hooks.clear()
+            _hooks.update({k: list(v) for k, v in snapshot.items()})
+
+
+@contextmanager
+def temporary_hook(
+    model: type,
+    event: str,
+    handler_cls: type,
+    method_name: str,
+    condition: Optional[Callable] = None,
+    priority: Union[int, Priority] = Priority.NORMAL,
+) -> Iterator[None]:
+    """
+    Temporarily register a single hook for the duration of the context.
+
+    Ensures the hook is unregistered even if an exception occurs.
+    """
+    register_hook(model, event, handler_cls, method_name, condition, priority)
+    try:
+        yield
+    finally:
+        unregister_hook(model, event, handler_cls, method_name)
+
+
+@contextmanager
+def temporary_hooks(
+    registrations: Iterable[Tuple[type, str, type, str, Optional[Callable], Union[int, Priority]]]
+) -> Iterator[None]:
+    """
+    Temporarily register multiple hooks for the duration of the context.
+
+    Args:
+        registrations: Iterable of (model, event, handler_cls, method_name, condition, priority)
+    """
+    # Register all
+    for model, event, handler_cls, method_name, condition, priority in registrations:
+        register_hook(model, event, handler_cls, method_name, condition, priority)
+    try:
+        yield
+    finally:
+        # Best-effort unregister all in reverse order
+        for model, event, handler_cls, method_name, _, _ in reversed(list(registrations)):
+            unregister_hook(model, event, handler_cls, method_name)

@@ -1,6 +1,5 @@
 import logging
 
-from django.conf import settings as django_settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
@@ -123,9 +122,6 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
             hook_vars.model = None
             hook_vars.depth -= 1
 
-    # AFTER_* timing policy: default immediate; optional on-commit
-    use_on_commit = bool(getattr(django_settings, "BULK_HOOKS_AFTER_ON_COMMIT", False))
-    if event.startswith("after_") and use_on_commit and transaction.get_connection().in_atomic_block:
-        transaction.on_commit(_execute)
-    else:
-        _execute()
+    # Execute immediately so AFTER_* runs within the transaction.
+    # If a hook raises, the transaction is rolled back (Salesforce-style).
+    _execute()
