@@ -43,7 +43,14 @@ def register_hook(
     hooks.append((handler_cls, method_name, condition, priority))
     
     # Sort by priority (highest numbers execute first)
-    hooks.sort(key=lambda x: x[3], reverse=True)
+    # Convert Priority enum to int for proper sorting
+    def sort_key(hook_info):
+        priority = hook_info[3]
+        if hasattr(priority, 'value'):  # Priority enum
+            return priority.value
+        return priority
+    
+    hooks.sort(key=sort_key, reverse=True)
     
     logger.debug(
         f"Registered {handler_cls.__name__}.{method_name} "

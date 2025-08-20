@@ -158,7 +158,7 @@ class PriorityOrderingTestCase(TestCase):
             OrderedTestModel,
             AFTER_CREATE,
             HighPriorityHooks,
-            "high_priority_before_create",
+            "high_priority_after_create",
             None,
             Priority.HIGH,
         )
@@ -362,17 +362,32 @@ class PriorityOrderingTestCase(TestCase):
         """Test mixing Priority enum and numeric priorities."""
         reset_execution_order()
 
-        # Register numeric priority hooks
-        numeric_hooks = NumericPriorityHooks()
+        # The numeric priority hooks are already registered in setUp
+        # No need to create instances here as it would trigger metaclass registration
+
+        # Debug: Check what hooks are registered
+        from django_bulk_hooks.registry import get_hooks
+        before_create_hooks_registered = get_hooks(OrderedTestModel, BEFORE_CREATE)
+        print(f"Registered hooks: {[(cls.__name__, method, priority) for cls, method, condition, priority in before_create_hooks_registered]}")
 
         OrderedTestModel.objects.create(name="Test", value=1, created_by=self.user)
 
         # All before_create hooks should be ordered by priority value
         # Priority.HIGH = 75, Priority.NORMAL = 50, Priority.LOW = 25
         # Numeric: 100, 25, 1
+        
+        # Get the method names of all registered BEFORE_CREATE hooks
+        registered_method_names = [method_name for _, method_name, _, _ in before_create_hooks_registered]
+        
+        # Filter execution order to only include BEFORE_CREATE hooks that executed
         before_create_hooks = [
-            hook for hook in execution_order if "before_create" in hook
+            hook for hook in execution_order if hook in registered_method_names
         ]
+        
+        # Debug: Show actual execution order
+        print(f"Execution order: {execution_order}")
+        print(f"Registered method names: {registered_method_names}")
+        print(f"Before create hooks: {before_create_hooks}")
 
         # Expected order based on priority values (highest to lowest)
         expected_contains = [
@@ -559,6 +574,17 @@ class PriorityOrderingTestCase(TestCase):
                 BEFORE_CREATE, model=OrderedTestModel, priority=priority
             )(make_hook(i))
             setattr(ManyHooksClass, f"hook_{i}", hook_method)
+
+            # Manually register the hook since metaclass registration happened before dynamic method addition
+            from django_bulk_hooks.registry import register_hook
+            register_hook(
+                OrderedTestModel,
+                BEFORE_CREATE,
+                ManyHooksClass,
+                f"hook_{i}",
+                None,
+                priority,
+            )
 
         many_hooks = ManyHooksClass()
         reset_execution_order()

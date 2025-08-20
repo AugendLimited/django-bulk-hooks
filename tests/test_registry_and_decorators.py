@@ -575,6 +575,17 @@ class RegistryEdgeCasesTestCase(TestCase):
             )
             setattr(DynamicHooks, f"dynamic_hook_{i}", hook_method)
 
+            # Manually register the hook since metaclass registration happened before dynamic method addition
+            from django_bulk_hooks.registry import register_hook
+            register_hook(
+                RegistryTestModel,
+                BEFORE_CREATE,
+                DynamicHooks,
+                f"dynamic_hook_{i}",
+                None,
+                50,  # Default priority
+            )
+
             # Create instance to trigger registration
             hooks_instance = DynamicHooks()
             hook_classes.append(hooks_instance)
