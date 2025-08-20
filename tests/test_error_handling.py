@@ -138,9 +138,12 @@ class ValidationErrorsTestCase(TestCase):
             VALIDATE_UPDATE,
         )
         from django_bulk_hooks.priority import Priority
-        from django_bulk_hooks.registry import _hooks, register_hook
+        from django_bulk_hooks.registry import register_hook, isolated_registry, clear_hooks
 
-        _hooks.clear()
+        # Isolate registry for this test and start from a clean state
+        self._iso = isolated_registry()
+        self._iso.__enter__()
+        clear_hooks()
 
         # Clean up any existing test data to avoid unique constraints
         ErrorTestModel.objects.all().delete()
@@ -212,6 +215,10 @@ class ValidationErrorsTestCase(TestCase):
         )
 
         self.hooks = ErrorHandlingHooks()
+
+    def tearDown(self):
+        # Restore registry snapshot
+        self._iso.__exit__(None, None, None)
 
     def test_validation_error_in_create(self):
         """Test validation errors during create operations."""
@@ -307,9 +314,11 @@ class HookErrorsTestCase(TransactionTestCase):
             VALIDATE_UPDATE,
         )
         from django_bulk_hooks.priority import Priority
-        from django_bulk_hooks.registry import _hooks, register_hook
+        from django_bulk_hooks.registry import register_hook, isolated_registry, clear_hooks
 
-        _hooks.clear()
+        self._iso = isolated_registry()
+        self._iso.__enter__()
+        clear_hooks()
 
         # Clean up any existing test data to avoid unique constraints
         ErrorTestModel.objects.all().delete()
@@ -381,6 +390,9 @@ class HookErrorsTestCase(TransactionTestCase):
         )
 
         self.hooks = ErrorHandlingHooks()
+
+    def tearDown(self):
+        self._iso.__exit__(None, None, None)
 
     def test_before_create_hook_error(self):
         """Test error in BEFORE_CREATE hook."""
@@ -497,9 +509,11 @@ class DatabaseConstraintErrorsTestCase(TransactionTestCase):
             VALIDATE_UPDATE,
         )
         from django_bulk_hooks.priority import Priority
-        from django_bulk_hooks.registry import _hooks, register_hook
+        from django_bulk_hooks.registry import register_hook, isolated_registry, clear_hooks
 
-        _hooks.clear()
+        self._iso = isolated_registry()
+        self._iso.__enter__()
+        clear_hooks()
 
         # Manually register the hooks that the test expects
         register_hook(
@@ -568,6 +582,9 @@ class DatabaseConstraintErrorsTestCase(TransactionTestCase):
         )
         
         self.hooks = ErrorHandlingHooks()
+
+    def tearDown(self):
+        self._iso.__exit__(None, None, None)
 
     def test_unique_constraint_error(self):
         """Test unique constraint violations."""
@@ -642,9 +659,11 @@ class TransactionRollbackTestCase(TransactionTestCase):
             VALIDATE_UPDATE,
         )
         from django_bulk_hooks.priority import Priority
-        from django_bulk_hooks.registry import _hooks, register_hook
+        from django_bulk_hooks.registry import register_hook, isolated_registry, clear_hooks
 
-        _hooks.clear()
+        self._iso = isolated_registry()
+        self._iso.__enter__()
+        clear_hooks()
 
         # Manually register the hooks that the test expects
         register_hook(
@@ -713,6 +732,9 @@ class TransactionRollbackTestCase(TransactionTestCase):
         )
         
         self.hooks = ErrorHandlingHooks()
+
+    def tearDown(self):
+        self._iso.__exit__(None, None, None)
 
     def test_rollback_on_hook_error(self):
         """Test that entire transaction is rolled back on hook error."""

@@ -126,10 +126,12 @@ class PriorityOrderingTestCase(TestCase):
             BEFORE_UPDATE,
         )
         from django_bulk_hooks.priority import Priority
-        from django_bulk_hooks.registry import _hooks, register_hook
+        from django_bulk_hooks.registry import register_hook, isolated_registry, clear_hooks
 
-        # Clear the registry
-        _hooks.clear()
+        # Isolate registry and clear within isolation
+        self._iso = isolated_registry()
+        self._iso.__enter__()
+        clear_hooks()
 
         self.user = User.objects.create_user(username="testuser")
 
@@ -141,8 +143,8 @@ class PriorityOrderingTestCase(TestCase):
         self.numeric_priority_hooks = NumericPriorityHooks()
         self.multiple_hooks_per_class = MultipleHooksPerClassHooks()
 
-        # Clear the registry again after metaclass registration to avoid conflicts
-        _hooks.clear()
+        # Clear again after metaclass registration to avoid conflicts within isolation
+        clear_hooks()
 
         # Now manually register the hooks to ensure proper test control
         # This overrides the metaclass registration for testing purposes
@@ -291,6 +293,10 @@ class PriorityOrderingTestCase(TestCase):
         ]
 
         self.assertEqual(before_create_hooks, expected_order)
+
+    def tearDown(self):
+        # Restore registry snapshot
+        self._iso.__exit__(None, None, None)
 
     def test_basic_priority_ordering_after_create(self):
         """Test that AFTER_CREATE hooks execute in priority order."""
@@ -601,10 +607,11 @@ class DefaultPriorityTestCase(TestCase):
         """Set up test data."""
         reset_execution_order()
 
-        # Clear the global hook registry
-        from django_bulk_hooks.registry import _hooks
-
-        _hooks.clear()
+        # Clear the global hook registry within an isolated context
+        from django_bulk_hooks.registry import isolated_registry, clear_hooks
+        self._iso = isolated_registry()
+        self._iso.__enter__()
+        clear_hooks()
 
         self.user = User.objects.create_user(username="testuser")
 
@@ -640,3 +647,6 @@ class DefaultPriorityTestCase(TestCase):
         ]
 
         self.assertEqual(before_create_hooks, expected_order)
+
+    def tearDown(self):
+        self._iso.__exit__(None, None, None)

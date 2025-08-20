@@ -187,9 +187,11 @@ class MultipleInheritanceTestCase(TestCase):
         # Clear the global hook registry and register hooks manually
         from django_bulk_hooks.constants import AFTER_UPDATE, BEFORE_UPDATE
         from django_bulk_hooks.priority import Priority
-        from django_bulk_hooks.registry import _hooks, register_hook
+        from django_bulk_hooks.registry import register_hook, isolated_registry, clear_hooks
 
-        _hooks.clear()
+        self._iso = isolated_registry()
+        self._iso.__enter__()
+        clear_hooks()
 
         # Manually register the hooks that the test expects
         register_hook(
@@ -212,6 +214,9 @@ class MultipleInheritanceTestCase(TestCase):
         self.user = User.objects.create_user(username="testuser", password="testpass")
         # Ensure hooks are registered
         self.hooks = MultiInheritanceHooks()
+
+    def tearDown(self):
+        self._iso.__exit__(None, None, None)
 
     def test_multiple_inheritance_mro(self):
         """Test MRO behavior with multiple inheritance."""

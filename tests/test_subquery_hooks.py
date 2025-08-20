@@ -73,9 +73,11 @@ class SubqueryHooksTestCase(TestCase):
         # Clear the global hook registry and register hooks manually
         from django_bulk_hooks.constants import AFTER_UPDATE, BEFORE_UPDATE
         from django_bulk_hooks.priority import Priority
-        from django_bulk_hooks.registry import _hooks, register_hook
+        from django_bulk_hooks.registry import register_hook, isolated_registry, clear_hooks
 
-        _hooks.clear()
+        self._iso = isolated_registry()
+        self._iso.__enter__()
+        clear_hooks()
 
         # Manually register the hooks that the test expects
         register_hook(
@@ -119,6 +121,9 @@ class SubqueryHooksTestCase(TestCase):
 
         # Create hook instance for registration (actual instances will be created by the framework)
         self.hook = SubqueryHookTest()
+
+    def tearDown(self):
+        self._iso.__exit__(None, None, None)
 
     def test_subquery_in_hooks(self):
         """Test that Subquery computed values are accessible in hooks."""
