@@ -1,17 +1,28 @@
 import logging
+import threading
 from collections.abc import Callable
-from typing import Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from django_bulk_hooks.priority import Priority
 
 logger = logging.getLogger(__name__)
 
-_hooks: dict[tuple[type, str], list[tuple[type, str, Callable, int]]] = {}
+# Key: (ModelClass, event)
+# Value: list of tuples (handler_cls, method_name, condition_callable, priority)
+_hooks: Dict[Tuple[type, str], List[Tuple[type, str, Callable, int]]] = {}
+
+# Registry lock for thread-safety during registration and clearing
+_lock = threading.RLock()
 
 
 def register_hook(
-    model, event, handler_cls, method_name, condition, priority: Union[int, Priority]
-):
+    model: type,
+    event: str,
+    handler_cls: type,
+    method_name: str,
+    condition: Optional[Callable],
+    priority: Union[int, Priority],
+) -> None:
     """
     Register a hook for a specific model and event.
     
@@ -26,39 +37,47 @@ def register_hook(
     if not model or not event or not handler_cls or not method_name:
         logger.warning("Invalid hook registration parameters")
         return
-    
-    key = (model, event)
-    hooks = _hooks.setdefault(key, [])
-    
-    # Check for duplicate registrations
-    existing = [h for h in hooks if h[0] == handler_cls and h[1] == method_name]
-    if existing:
-        logger.warning(
-            f"Hook {handler_cls.__name__}.{method_name} already registered "
-            f"for {model.__name__}.{event}"
+
+    # Normalize event to str just in case enums are used upstream
+    event = str(event)
+
+    with _lock:
+        key = (model, event)
+        hooks = _hooks.setdefault(key, [])
+
+        # Check for duplicate registrations
+        duplicate = any(h[0] == handler_cls and h[1] == method_name for h in hooks)
+        if duplicate:
+            logger.warning(
+                "Hook %s.%s already registered for %s.%s",
+                handler_cls.__name__,
+                method_name,
+                model.__name__,
+                event,
+            )
+            return
+
+        # Add the hook
+        hooks.append((handler_cls, method_name, condition, priority))
+
+        # Sort by priority (highest numbers execute first)
+        def sort_key(hook_info: Tuple[type, str, Callable, int]) -> int:
+            p = hook_info[3]
+            return p.value if hasattr(p, "value") else int(p)
+
+        hooks.sort(key=sort_key, reverse=True)
+
+        logger.debug(
+            "Registered %s.%s for %s.%s with priority %s",
+            handler_cls.__name__,
+            method_name,
+            model.__name__,
+            event,
+            priority,
         )
-        return
-    
-    # Add the hook
-    hooks.append((handler_cls, method_name, condition, priority))
-    
-    # Sort by priority (highest numbers execute first)
-    # Convert Priority enum to int for proper sorting
-    def sort_key(hook_info):
-        priority = hook_info[3]
-        if hasattr(priority, 'value'):  # Priority enum
-            return priority.value
-        return priority
-    
-    hooks.sort(key=sort_key, reverse=True)
-    
-    logger.debug(
-        f"Registered {handler_cls.__name__}.{method_name} "
-        f"for {model.__name__}.{event} with priority {priority}"
-    )
 
 
-def get_hooks(model, event):
+def get_hooks(model: type, event: str):
     """
     Get all registered hooks for a specific model and event.
     
@@ -71,28 +90,47 @@ def get_hooks(model, event):
     """
     if not model or not event:
         return []
-    
-    key = (model, event)
-    hooks = _hooks.get(key, [])
-    
-    # Log hook discovery for debugging
-    if hooks:
-        logger.debug(f"Found {len(hooks)} hooks for {model.__name__}.{event}")
-        for handler_cls, method_name, condition, priority in hooks:
-            logger.debug(f"  - {handler_cls.__name__}.{method_name} (priority: {priority})")
-    else:
-        logger.debug(f"No hooks found for {model.__name__}.{event}")
-    
-    return hooks
+
+    event = str(event)
+
+    with _lock:
+        key = (model, event)
+        hooks = _hooks.get(key, [])
+
+        # Log hook discovery for debugging
+        if hooks:
+            logger.debug("Found %d hooks for %s.%s", len(hooks), model.__name__, event)
+            for handler_cls, method_name, condition, priority in hooks:
+                logger.debug("  - %s.%s (priority: %s)", handler_cls.__name__, method_name, priority)
+        else:
+            logger.debug("No hooks found for %s.%s", model.__name__, event)
+
+        # Return a shallow copy to prevent external mutation of registry state
+        return list(hooks)
 
 
-def list_all_hooks():
-    """Debug function to list all registered hooks."""
-    return _hooks
+def list_all_hooks() -> Dict[Tuple[type, str], List[Tuple[type, str, Callable, int]]]:
+    """Debug function to list all registered hooks (shallow copy)."""
+    with _lock:
+        return {k: list(v) for k, v in _hooks.items()}
 
 
-def clear_hooks():
+def clear_hooks() -> None:
     """Clear all registered hooks (mainly for testing)."""
-    global _hooks
-    _hooks.clear()
-    logger.debug("All hooks cleared")
+    with _lock:
+        _hooks.clear()
+        logger.debug("All hooks cleared")
+
+
+def unregister_hook(model: type, event: str, handler_cls: type, method_name: str) -> None:
+    """Unregister a previously registered hook (safe no-op if not present)."""
+    event = str(event)
+    with _lock:
+        key = (model, event)
+        if key not in _hooks:
+            return
+        _hooks[key] = [
+            h for h in _hooks[key] if not (h[0] == handler_cls and h[1] == method_name)
+        ]
+        if not _hooks[key]:
+            del _hooks[key]
