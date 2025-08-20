@@ -67,10 +67,8 @@ class MockQueryablePropertiesManager(models.Manager):
 class MultiInheritanceQuerySet(HookQuerySetMixin, models.QuerySet):
     """QuerySet that supports hooks for testing multiple inheritance."""
     
-    def update(self, **kwargs):
-        """Override update to add custom behavior."""
-        # Add custom behavior here if needed
-        return super().update(**kwargs)
+    # Don't override update - let HookQuerySetMixin handle it
+    pass
 
 
 class MultiInheritanceManager(BulkHookManager):
@@ -186,6 +184,31 @@ class MultipleInheritanceTestCase(TestCase):
 
     def setUp(self):
         """Set up test data and hooks."""
+        # Clear the global hook registry and register hooks manually
+        from django_bulk_hooks.constants import AFTER_UPDATE, BEFORE_UPDATE
+        from django_bulk_hooks.priority import Priority
+        from django_bulk_hooks.registry import _hooks, register_hook
+
+        _hooks.clear()
+
+        # Manually register the hooks that the test expects
+        register_hook(
+            MultiInheritanceTestModel,
+            BEFORE_UPDATE,
+            MultiInheritanceHooks,
+            "before_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            MultiInheritanceTestModel,
+            AFTER_UPDATE,
+            MultiInheritanceHooks,
+            "after_update",
+            None,
+            Priority.NORMAL,
+        )
+
         self.user = User.objects.create_user(username="testuser", password="testpass")
         # Ensure hooks are registered
         self.hooks = MultiInheritanceHooks()

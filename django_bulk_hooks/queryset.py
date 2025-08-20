@@ -95,22 +95,49 @@ class HookQuerySetMixin:
 
         # Run hooks only if not bypassed
         if not bypass_hooks:
+            ctx = HookContext(model_cls)
             # Run VALIDATE_UPDATE hooks
-            engine.run(model_cls, VALIDATE_UPDATE, instances, originals, HookContext(model_cls))
+            engine.run(model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx)
             
-            # Run BEFORE_UPDATE hooks
-            engine.run(model_cls, BEFORE_UPDATE, instances, originals, HookContext(model_cls))
+            # For subqueries, we need to compute the values and apply them to instances
+            # before running BEFORE_UPDATE hooks
+            if has_subquery:
+                # Create a temporary update to compute the values
+                # We'll use a subquery to compute values without actually updating
+                for field_name, value in kwargs.items():
+                    if (hasattr(value, "query") and hasattr(value.query, "model")) or \
+                       (hasattr(value, "get_source_expressions") and value.get_source_expressions()):
+                        # This is a complex expression - compute it for each instance
+                        for instance in instances:
+                            # Create a single-instance queryset to compute the value
+                            single_qs = model_cls._base_manager.filter(pk=instance.pk)
+                            computed_values = single_qs.annotate(computed_field=value).values_list('computed_field', flat=True)
+                            if computed_values:
+                                setattr(instance, field_name, computed_values[0])
+            else:
+                # For simple updates, apply the values directly
+                for obj in instances:
+                    for field, value in kwargs.items():
+                        setattr(obj, field, value)
+            
+            # Run BEFORE_UPDATE hooks with updated instances
+            engine.run(model_cls, BEFORE_UPDATE, instances, originals, ctx=ctx)
 
         if has_subquery:
             # For complex expressions, use Django's native update
             # This handles Subquery, Case, F expressions, etc. correctly
             result = super().update(**kwargs)
+            
+            # After updating with complex expressions, we need to reload the instances
+            # to get the computed values for the AFTER_UPDATE hooks
+            if not bypass_hooks:
+                # Reload instances to get computed values
+                updated_instances = list(model_cls._base_manager.filter(pk__in=pks))
+                # Maintain the original order
+                updated_map = {obj.pk: obj for obj in updated_instances}
+                instances = [updated_map.get(obj.pk, obj) for obj in instances]
         else:
-            # For simple field updates, apply changes to instances first
-            for obj in instances:
-                for field, value in kwargs.items():
-                    setattr(obj, field, value)
-
+            # For simple field updates, instances have already been updated in the hook section
             # Perform database update using Django's native bulk_update
             # We use the base manager to avoid recursion
             base_manager = model_cls._base_manager
@@ -120,7 +147,8 @@ class HookQuerySetMixin:
 
         # Run AFTER_UPDATE hooks only if not bypassed
         if not bypass_hooks:
-            engine.run(model_cls, AFTER_UPDATE, instances, originals, HookContext(model_cls))
+            ctx = HookContext(model_cls)
+            engine.run(model_cls, AFTER_UPDATE, instances, originals, ctx=ctx)
         
         return result
 
@@ -273,14 +301,16 @@ class HookQuerySetMixin:
 
         # Run VALIDATE_UPDATE hooks
         if not bypass_validation:
+            ctx = HookContext(model_cls)
             engine.run(
-                model_cls, VALIDATE_UPDATE, objs, originals, HookContext(model_cls)
+                model_cls, VALIDATE_UPDATE, objs, originals, ctx=ctx
             )
 
         # Run BEFORE_UPDATE hooks
         if not bypass_hooks:
+            ctx = HookContext(model_cls)
             engine.run(
-                model_cls, BEFORE_UPDATE, objs, originals, HookContext(model_cls)
+                model_cls, BEFORE_UPDATE, objs, originals, ctx=ctx
             )
 
         # Perform database update using Django's native bulk_update
@@ -290,7 +320,8 @@ class HookQuerySetMixin:
 
         # Run AFTER_UPDATE hooks
         if not bypass_hooks:
-            engine.run(model_cls, AFTER_UPDATE, objs, originals, HookContext(model_cls))
+            ctx = HookContext(model_cls)
+            engine.run(model_cls, AFTER_UPDATE, objs, originals, ctx=ctx)
 
         return result
 

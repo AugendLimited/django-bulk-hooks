@@ -43,7 +43,8 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
                 logger.error("Validation failed for %s: %s", instance, e)
                 raise
 
-    # Process hooks in priority order
+    # Process hooks in priority order (highest priority first)
+    # Registry now sorts by priority (highest first)
     for handler_cls, method_name, condition, priority in hooks:
         logger.debug(f"Processing {handler_cls.__name__}.{method_name} (priority: {priority})")
         
@@ -80,8 +81,9 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
             try:
                 func(
                     new_records=to_process_new,
-                    old_records=to_process_old if any(to_process_old) else None,
+                    old_records=to_process_old if any(x is not None for x in to_process_old) else None,
                 )
             except Exception as e:
                 logger.error(f"Hook execution failed in {handler_cls.__name__}.{method_name}: {e}")
+                # Re-raise the exception to ensure proper error handling
                 raise

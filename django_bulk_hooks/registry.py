@@ -42,8 +42,8 @@ def register_hook(
     # Add the hook
     hooks.append((handler_cls, method_name, condition, priority))
     
-    # Sort by priority (lowest numbers execute first, matching engine expectation)
-    hooks.sort(key=lambda x: x[3])
+    # Sort by priority (highest numbers execute first)
+    hooks.sort(key=lambda x: x[3], reverse=True)
     
     logger.debug(
         f"Registered {handler_cls.__name__}.{method_name} "
@@ -71,6 +71,10 @@ def get_hooks(model, event):
     # Log hook discovery for debugging
     if hooks:
         logger.debug(f"Found {len(hooks)} hooks for {model.__name__}.{event}")
+        for handler_cls, method_name, condition, priority in hooks:
+            logger.debug(f"  - {handler_cls.__name__}.{method_name} (priority: {priority})")
+    else:
+        logger.debug(f"No hooks found for {model.__name__}.{event}")
     
     return hooks
 

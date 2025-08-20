@@ -70,6 +70,31 @@ class SubqueryHooksTestCase(TestCase):
     """Test case for Subquery hook functionality."""
 
     def setUp(self):
+        # Clear the global hook registry and register hooks manually
+        from django_bulk_hooks.constants import AFTER_UPDATE, BEFORE_UPDATE
+        from django_bulk_hooks.priority import Priority
+        from django_bulk_hooks.registry import _hooks, register_hook
+
+        _hooks.clear()
+
+        # Manually register the hooks that the test expects
+        register_hook(
+            TestModel,
+            AFTER_UPDATE,
+            SubqueryHookTest,
+            "test_subquery_access",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            TestModel,
+            BEFORE_UPDATE,
+            SubqueryHookTest,
+            "test_before_subquery_access",
+            None,
+            Priority.NORMAL,
+        )
+
         # Create test data
         self.user = User.objects.create(username="testuser")
         self.test_model = TestModel.objects.create(

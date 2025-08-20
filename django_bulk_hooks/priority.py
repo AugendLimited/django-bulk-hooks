@@ -5,12 +5,12 @@ class Priority(IntEnum):
     """
     Named priorities for django-bulk-hooks hooks.
 
-    Lower values run earlier (higher priority).
-    Hooks are sorted in ascending order.
+    Higher values run earlier (higher priority).
+    Hooks are sorted in descending order.
     """
 
-    HIGHEST = 0  # runs first
-    HIGH = 25  # runs early
+    LOWEST = 0  # runs last
+    LOW = 25  # runs later
     NORMAL = 50  # default ordering
-    LOW = 75  # runs later
-    LOWEST = 100  # runs last
+    HIGH = 75  # runs early
+    HIGHEST = 100  # runs first

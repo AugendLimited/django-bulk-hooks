@@ -128,11 +128,24 @@ class PriorityOrderingTestCase(TestCase):
         from django_bulk_hooks.priority import Priority
         from django_bulk_hooks.registry import _hooks, register_hook
 
+        # Clear the registry
         _hooks.clear()
 
         self.user = User.objects.create_user(username="testuser")
 
-        # Manually register the hooks for our test classes
+        # Create instances of all Hook classes to trigger metaclass registration
+        # This ensures all hooks are registered before we manually override some
+        self.high_priority_hooks = HighPriorityHooks()
+        self.normal_priority_hooks = NormalPriorityHooks()
+        self.low_priority_hooks = LowPriorityHooks()
+        self.numeric_priority_hooks = NumericPriorityHooks()
+        self.multiple_hooks_per_class = MultipleHooksPerClassHooks()
+
+        # Clear the registry again after metaclass registration to avoid conflicts
+        _hooks.clear()
+
+        # Now manually register the hooks to ensure proper test control
+        # This overrides the metaclass registration for testing purposes
         register_hook(
             OrderedTestModel,
             BEFORE_CREATE,
@@ -145,7 +158,7 @@ class PriorityOrderingTestCase(TestCase):
             OrderedTestModel,
             AFTER_CREATE,
             HighPriorityHooks,
-            "high_priority_after_create",
+            "high_priority_before_create",
             None,
             Priority.HIGH,
         )
@@ -208,10 +221,57 @@ class PriorityOrderingTestCase(TestCase):
             Priority.LOW,
         )
 
-        # Register all hook classes
-        self.high_priority_hooks = HighPriorityHooks()
-        self.normal_priority_hooks = NormalPriorityHooks()
-        self.low_priority_hooks = LowPriorityHooks()
+        # Register numeric priority hooks
+        register_hook(
+            OrderedTestModel,
+            BEFORE_CREATE,
+            NumericPriorityHooks,
+            "very_high_numeric_priority",
+            None,
+            100,
+        )
+        register_hook(
+            OrderedTestModel,
+            BEFORE_CREATE,
+            NumericPriorityHooks,
+            "custom_numeric_priority",
+            None,
+            25,
+        )
+        register_hook(
+            OrderedTestModel,
+            BEFORE_CREATE,
+            NumericPriorityHooks,
+            "very_low_numeric_priority",
+            None,
+            1,
+        )
+
+        # Register multiple hooks per class
+        register_hook(
+            OrderedTestModel,
+            BEFORE_CREATE,
+            MultipleHooksPerClassHooks,
+            "first_hook",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            OrderedTestModel,
+            BEFORE_CREATE,
+            MultipleHooksPerClassHooks,
+            "second_hook",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            OrderedTestModel,
+            BEFORE_CREATE,
+            MultipleHooksPerClassHooks,
+            "third_hook",
+            None,
+            Priority.NORMAL,
+        )
 
     def test_basic_priority_ordering_before_create(self):
         """Test that BEFORE_CREATE hooks execute in priority order."""

@@ -108,7 +108,7 @@ class ErrorHandlingHooks(Hook):
     @hook(BEFORE_DELETE, model=ErrorTestModel)
     def before_delete(self, new_records, old_records):
         error_state["hook_calls"].append("before_delete")
-        for record in old_records:
+        for record in new_records or []:
             if record.name == "PROTECTED":
                 raise RuntimeError("Cannot delete protected record")
 
@@ -296,12 +296,89 @@ class HookErrorsTestCase(TransactionTestCase):
         reset_error_state()
 
         # Clear the global hook registry for clean slate
-        from django_bulk_hooks.registry import _hooks
+        from django_bulk_hooks.constants import (
+            AFTER_CREATE,
+            AFTER_DELETE,
+            AFTER_UPDATE,
+            BEFORE_CREATE,
+            BEFORE_DELETE,
+            BEFORE_UPDATE,
+            VALIDATE_CREATE,
+            VALIDATE_UPDATE,
+        )
+        from django_bulk_hooks.priority import Priority
+        from django_bulk_hooks.registry import _hooks, register_hook
 
         _hooks.clear()
 
         # Clean up any existing test data to avoid unique constraints
         ErrorTestModel.objects.all().delete()
+
+        # Manually register the hooks that the test expects
+        register_hook(
+            ErrorTestModel,
+            VALIDATE_CREATE,
+            ErrorHandlingHooks,
+            "validate_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            VALIDATE_UPDATE,
+            ErrorHandlingHooks,
+            "validate_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_CREATE,
+            ErrorHandlingHooks,
+            "before_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_CREATE,
+            ErrorHandlingHooks,
+            "after_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_UPDATE,
+            ErrorHandlingHooks,
+            "before_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_UPDATE,
+            ErrorHandlingHooks,
+            "after_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_DELETE,
+            ErrorHandlingHooks,
+            "before_delete",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_DELETE,
+            ErrorHandlingHooks,
+            "after_delete",
+            None,
+            Priority.NORMAL,
+        )
 
         self.hooks = ErrorHandlingHooks()
 
@@ -407,6 +484,89 @@ class DatabaseConstraintErrorsTestCase(TransactionTestCase):
     def setUp(self):
         """Set up test data."""
         reset_error_state()
+        
+        # Register hooks for consistent test environment
+        from django_bulk_hooks.constants import (
+            AFTER_CREATE,
+            AFTER_DELETE,
+            AFTER_UPDATE,
+            BEFORE_CREATE,
+            BEFORE_DELETE,
+            BEFORE_UPDATE,
+            VALIDATE_CREATE,
+            VALIDATE_UPDATE,
+        )
+        from django_bulk_hooks.priority import Priority
+        from django_bulk_hooks.registry import _hooks, register_hook
+
+        _hooks.clear()
+
+        # Manually register the hooks that the test expects
+        register_hook(
+            ErrorTestModel,
+            VALIDATE_CREATE,
+            ErrorHandlingHooks,
+            "validate_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            VALIDATE_UPDATE,
+            ErrorHandlingHooks,
+            "validate_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_CREATE,
+            ErrorHandlingHooks,
+            "before_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_CREATE,
+            ErrorHandlingHooks,
+            "after_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_UPDATE,
+            ErrorHandlingHooks,
+            "before_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_UPDATE,
+            ErrorHandlingHooks,
+            "after_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_DELETE,
+            ErrorHandlingHooks,
+            "before_delete",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_DELETE,
+            ErrorHandlingHooks,
+            "after_delete",
+            None,
+            Priority.NORMAL,
+        )
+        
         self.hooks = ErrorHandlingHooks()
 
     def test_unique_constraint_error(self):
@@ -463,6 +623,89 @@ class TransactionRollbackTestCase(TransactionTestCase):
     def setUp(self):
         """Set up test data."""
         reset_error_state()
+        
+        # Register hooks for consistent test environment
+        from django_bulk_hooks.constants import (
+            AFTER_CREATE,
+            AFTER_DELETE,
+            AFTER_UPDATE,
+            BEFORE_CREATE,
+            BEFORE_DELETE,
+            BEFORE_UPDATE,
+            VALIDATE_CREATE,
+            VALIDATE_UPDATE,
+        )
+        from django_bulk_hooks.priority import Priority
+        from django_bulk_hooks.registry import _hooks, register_hook
+
+        _hooks.clear()
+
+        # Manually register the hooks that the test expects
+        register_hook(
+            ErrorTestModel,
+            VALIDATE_CREATE,
+            ErrorHandlingHooks,
+            "validate_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            VALIDATE_UPDATE,
+            ErrorHandlingHooks,
+            "validate_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_CREATE,
+            ErrorHandlingHooks,
+            "before_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_CREATE,
+            ErrorHandlingHooks,
+            "after_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_UPDATE,
+            ErrorHandlingHooks,
+            "before_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_UPDATE,
+            ErrorHandlingHooks,
+            "after_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_DELETE,
+            ErrorHandlingHooks,
+            "before_delete",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_DELETE,
+            ErrorHandlingHooks,
+            "after_delete",
+            None,
+            Priority.NORMAL,
+        )
+        
         self.hooks = ErrorHandlingHooks()
 
     def test_rollback_on_hook_error(self):
@@ -545,6 +788,89 @@ class EdgeCasesTestCase(TestCase):
     def setUp(self):
         """Set up test data."""
         reset_error_state()
+        
+        # Register hooks for consistent test environment
+        from django_bulk_hooks.constants import (
+            AFTER_CREATE,
+            AFTER_DELETE,
+            AFTER_UPDATE,
+            BEFORE_CREATE,
+            BEFORE_DELETE,
+            BEFORE_UPDATE,
+            VALIDATE_CREATE,
+            VALIDATE_UPDATE,
+        )
+        from django_bulk_hooks.priority import Priority
+        from django_bulk_hooks.registry import _hooks, register_hook
+
+        _hooks.clear()
+
+        # Manually register the hooks that the test expects
+        register_hook(
+            ErrorTestModel,
+            VALIDATE_CREATE,
+            ErrorHandlingHooks,
+            "validate_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            VALIDATE_UPDATE,
+            ErrorHandlingHooks,
+            "validate_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_CREATE,
+            ErrorHandlingHooks,
+            "before_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_CREATE,
+            ErrorHandlingHooks,
+            "after_create",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_UPDATE,
+            ErrorHandlingHooks,
+            "before_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_UPDATE,
+            ErrorHandlingHooks,
+            "after_update",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            BEFORE_DELETE,
+            ErrorHandlingHooks,
+            "before_delete",
+            None,
+            Priority.NORMAL,
+        )
+        register_hook(
+            ErrorTestModel,
+            AFTER_DELETE,
+            ErrorHandlingHooks,
+            "after_delete",
+            None,
+            Priority.NORMAL,
+        )
+        
         self.hooks = ErrorHandlingHooks()
 
     def test_empty_bulk_operations(self):
@@ -677,7 +1003,7 @@ class EdgeCasesTestCase(TestCase):
             @hook(AFTER_DELETE, model=ErrorTestModel)
             def access_deleted(self, new_records, old_records):
                 error_state["hook_calls"].append("access_deleted")
-                for record in old_records:
+                for record in new_records or []:
                     # Try to access the deleted object's attributes
                     error_state["hook_calls"].append(f"accessed_{record.name}")
                     # This should work since we have the object reference

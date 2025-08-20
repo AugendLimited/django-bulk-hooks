@@ -61,36 +61,43 @@ class HookContextState:
         return hook_vars.model
 
 
-Hook = HookContextState()
-
-
 class HookMeta(type):
     """Metaclass that automatically registers hooks when Hook classes are defined."""
     
     def __new__(mcs, name, bases, namespace):
         cls = super().__new__(mcs, name, bases, namespace)
         
-        # Register hooks for this class
-        for method_name, method in namespace.items():
-            if hasattr(method, "hooks_hooks"):
-                for model_cls, event, condition, priority in method.hooks_hooks:
-                    # Create a unique key for this hook registration
-                    key = (model_cls, event, cls, method_name)
-                    
-                    # Register the hook
-                    register_hook(
-                        model=model_cls,
-                        event=event,
-                        handler_cls=cls,
-                        method_name=method_name,
-                        condition=condition,
-                        priority=priority,
-                    )
-                    
-                    logger.debug(
-                        f"Registered hook {cls.__name__}.{method_name} "
-                        f"for {model_cls.__name__}.{event} with priority {priority}"
-                    )
+        # Register hooks for this class, including inherited methods
+        # We need to check all methods in the MRO to handle inheritance
+        for attr_name in dir(cls):
+            if attr_name.startswith('_'):
+                continue
+                
+            try:
+                attr = getattr(cls, attr_name)
+                if callable(attr) and hasattr(attr, "hooks_hooks"):
+                    for model_cls, event, condition, priority in attr.hooks_hooks:
+                        # Create a unique key for this hook registration
+                        key = (model_cls, event, cls, attr_name)
+                        
+                        # Register the hook
+                        register_hook(
+                            model=model_cls,
+                            event=event,
+                            handler_cls=cls,
+                            method_name=attr_name,
+                            condition=condition,
+                            priority=priority,
+                        )
+                        
+                        logger.debug(
+                            f"Registered hook {cls.__name__}.{attr_name} "
+                            f"for {model_cls.__name__}.{event} with priority {priority}"
+                        )
+            except Exception as e:
+                # Skip attributes that can't be accessed
+                logger.debug(f"Skipping attribute {attr_name}: {e}")
+                continue
         
         return cls
 
@@ -132,7 +139,7 @@ class Hook(metaclass=HookMeta):
         hook_vars.event = event
         hook_vars.model = model
 
-        hooks = sorted(get_hooks(model, event), key=lambda x: x[3])
+        hooks = get_hooks(model, event)
 
         def _execute():
             new_local = new_records or []
@@ -161,6 +168,8 @@ class Hook(metaclass=HookMeta):
                     logger.exception(
                         "Error in hook %s.%s", handler_cls.__name__, method_name
                     )
+                    # Re-raise the exception to ensure proper error handling
+                    raise
 
         conn = transaction.get_connection()
         try:
@@ -174,3 +183,7 @@ class Hook(metaclass=HookMeta):
             hook_vars.event = None
             hook_vars.model = None
             hook_vars.depth -= 1
+
+
+# Create a global Hook instance for context access
+HookContext = HookContextState()
