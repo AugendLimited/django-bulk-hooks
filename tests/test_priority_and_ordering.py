@@ -365,29 +365,21 @@ class PriorityOrderingTestCase(TestCase):
         # The numeric priority hooks are already registered in setUp
         # No need to create instances here as it would trigger metaclass registration
 
-        # Debug: Check what hooks are registered
-        from django_bulk_hooks.registry import get_hooks
-        before_create_hooks_registered = get_hooks(OrderedTestModel, BEFORE_CREATE)
-        print(f"Registered hooks: {[(cls.__name__, method, priority) for cls, method, condition, priority in before_create_hooks_registered]}")
-
         OrderedTestModel.objects.create(name="Test", value=1, created_by=self.user)
 
         # All before_create hooks should be ordered by priority value
         # Priority.HIGH = 75, Priority.NORMAL = 50, Priority.LOW = 25
         # Numeric: 100, 25, 1
         
-        # Get the method names of all registered BEFORE_CREATE hooks
+        # Get the method names of all registered BEFORE_CREATE hooks to filter correctly
+        from django_bulk_hooks.registry import get_hooks
+        before_create_hooks_registered = get_hooks(OrderedTestModel, BEFORE_CREATE)
         registered_method_names = [method_name for _, method_name, _, _ in before_create_hooks_registered]
         
         # Filter execution order to only include BEFORE_CREATE hooks that executed
         before_create_hooks = [
             hook for hook in execution_order if hook in registered_method_names
         ]
-        
-        # Debug: Show actual execution order
-        print(f"Execution order: {execution_order}")
-        print(f"Registered method names: {registered_method_names}")
-        print(f"Before create hooks: {before_create_hooks}")
 
         # Expected order based on priority values (highest to lowest)
         expected_contains = [
@@ -539,7 +531,7 @@ class PriorityOrderingTestCase(TestCase):
         """Test that exception in high priority hook prevents lower priority hooks."""
 
         class FailingHook(Hook):
-            @hook(BEFORE_CREATE, model=OrderedTestModel, priority=Priority.HIGH)
+            @hook(BEFORE_CREATE, model=OrderedTestModel, priority=200)  # Higher than all other hooks
             def failing_high_priority(self, new_records, old_records):
                 execution_order.append("failing_high_priority")
                 raise ValueError("High priority hook failed")

@@ -61,14 +61,51 @@ class HookModelMixin(models.Model):
             logger.debug(f"save() called with bypass_hooks=True for {self.__class__.__name__} pk={self.pk}")
             return self._base_manager.save(self, *args, **kwargs)
 
-        is_create = self.pk is None
+        # Only create a new transaction if we're not already in one
+        # This allows for proper nested transaction handling
+        from django.db import connection
+        if connection.in_atomic_block:
+            # We're already in a transaction, don't create a new one
+            return self._save_with_hooks(*args, **kwargs)
+        else:
+            # We're not in a transaction, so create one
+            with transaction.atomic():
+                return self._save_with_hooks(*args, **kwargs)
 
-        # Wrap the entire save operation in a transaction to ensure rollback on hook failures
-        with transaction.atomic():
-            if is_create:
-                logger.debug(f"save() creating new {self.__class__.__name__} instance")
-                # For create operations, we don't have old records
-                ctx = HookContext(self.__class__, bypass_hooks)
+    def _save_with_hooks(self, *args, **kwargs):
+        """Internal method to handle save with hooks."""
+        is_create = self.pk is None
+        
+        if is_create:
+            logger.debug(f"save() creating new {self.__class__.__name__} instance")
+            # For create operations, we don't have old records
+            ctx = HookContext(self.__class__, bypass_hooks=False)
+            
+            # Run hooks - if any fail, the transaction will be rolled back
+            run(self.__class__, VALIDATE_CREATE, [self], ctx=ctx)
+            run(self.__class__, BEFORE_CREATE, [self], ctx=ctx)
+
+            super().save(*args, **kwargs)
+
+            run(self.__class__, AFTER_CREATE, [self], ctx=ctx)
+        else:
+            logger.debug(f"save() updating existing {self.__class__.__name__} instance pk={self.pk}")
+            # For update operations, we need to get the old record
+            try:
+                # Use _base_manager to avoid triggering hooks recursively
+                old_instance = self.__class__._base_manager.get(pk=self.pk)
+                ctx = HookContext(self.__class__, bypass_hooks=False)
+                
+                # Run hooks - if any fail, the transaction will be rolled back
+                run(self.__class__, VALIDATE_UPDATE, [self], [old_instance], ctx=ctx)
+                run(self.__class__, BEFORE_UPDATE, [self], [old_instance], ctx=ctx)
+
+                super().save(*args, **kwargs)
+
+                run(self.__class__, AFTER_UPDATE, [self], [old_instance], ctx=ctx)
+            except self.__class__.DoesNotExist:
+                # If the old instance doesn't exist, treat as create
+                ctx = HookContext(self.__class__, bypass_hooks=False)
                 
                 # Run hooks - if any fail, the transaction will be rolled back
                 run(self.__class__, VALIDATE_CREATE, [self], ctx=ctx)
@@ -77,32 +114,6 @@ class HookModelMixin(models.Model):
                 super().save(*args, **kwargs)
 
                 run(self.__class__, AFTER_CREATE, [self], ctx=ctx)
-            else:
-                logger.debug(f"save() updating existing {self.__class__.__name__} instance pk={self.pk}")
-                # For update operations, we need to get the old record
-                try:
-                    # Use _base_manager to avoid triggering hooks recursively
-                    old_instance = self.__class__._base_manager.get(pk=self.pk)
-                    ctx = HookContext(self.__class__, bypass_hooks)
-                    
-                    # Run hooks - if any fail, the transaction will be rolled back
-                    run(self.__class__, VALIDATE_UPDATE, [self], [old_instance], ctx=ctx)
-                    run(self.__class__, BEFORE_UPDATE, [self], [old_instance], ctx=ctx)
-
-                    super().save(*args, **kwargs)
-
-                    run(self.__class__, AFTER_UPDATE, [self], [old_instance], ctx=ctx)
-                except self.__class__.DoesNotExist:
-                    # If the old instance doesn't exist, treat as create
-                    ctx = HookContext(self.__class__, bypass_hooks)
-                    
-                    # Run hooks - if any fail, the transaction will be rolled back
-                    run(self.__class__, VALIDATE_CREATE, [self], ctx=ctx)
-                    run(self.__class__, BEFORE_CREATE, [self], ctx=ctx)
-
-                    super().save(*args, **kwargs)
-
-                    run(self.__class__, AFTER_CREATE, [self], ctx=ctx)
 
         return self
 
@@ -111,17 +122,28 @@ class HookModelMixin(models.Model):
         if bypass_hooks:
             return self._base_manager.delete(self, *args, **kwargs)
 
-        ctx = HookContext(self.__class__, bypass_hooks)
+        # Only create a new transaction if we're not already in one
+        # This allows for proper nested transaction handling
+        from django.db import connection
+        if connection.in_atomic_block:
+            # We're already in a transaction, don't create a new one
+            return self._delete_with_hooks(*args, **kwargs)
+        else:
+            # We're not in a transaction, so create one
+            with transaction.atomic():
+                return self._delete_with_hooks(*args, **kwargs)
 
-        # Wrap the entire delete operation in a transaction to ensure rollback on hook failures
-        with transaction.atomic():
-            # Run hooks - if any fail, the transaction will be rolled back
-            run(self.__class__, VALIDATE_DELETE, [self], ctx=ctx)
+    def _delete_with_hooks(self, *args, **kwargs):
+        """Internal method to handle delete with hooks."""
+        ctx = HookContext(self.__class__, bypass_hooks=False)
 
-            # Then run business logic hooks
-            run(self.__class__, BEFORE_DELETE, [self], ctx=ctx)
+        # Run hooks - if any fail, the transaction will be rolled back
+        run(self.__class__, VALIDATE_DELETE, [self], ctx=ctx)
 
-            result = super().delete(*args, **kwargs)
+        # Then run business logic hooks
+        run(self.__class__, BEFORE_DELETE, [self], ctx=ctx)
 
-            run(self.__class__, AFTER_DELETE, [self], ctx=ctx)
-            return result
+        result = super().delete(*args, **kwargs)
+
+        run(self.__class__, AFTER_DELETE, [self], ctx=ctx)
+        return result

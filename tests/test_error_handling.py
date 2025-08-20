@@ -736,7 +736,9 @@ class TransactionRollbackTestCase(TransactionTestCase):
     def test_nested_transaction_rollback(self):
         """Test rollback behavior with nested transactions."""
 
-        try:
+        # The test expects that when a hook fails, the entire transaction is rolled back
+        # This requires letting the exception propagate to the outer transaction context
+        with self.assertRaises(RuntimeError):
             with transaction.atomic():
                 # Create first object successfully
                 obj1 = ErrorTestModel.objects.create(
@@ -744,15 +746,12 @@ class TransactionRollbackTestCase(TransactionTestCase):
                 )
 
                 # Create second object that will fail in hook
-                with self.assertRaises(RuntimeError):
-                    ErrorTestModel.objects.create(
-                        name="FAIL_BEFORE",
-                        required_field="test2",
-                        unique_field="second",
-                    )
-
-        except RuntimeError:
-            pass
+                # This should cause the entire transaction to roll back
+                ErrorTestModel.objects.create(
+                    name="FAIL_BEFORE",
+                    required_field="test2",
+                    unique_field="second",
+                )
 
         # Both objects should be rolled back due to outer transaction
         self.assertEqual(ErrorTestModel.objects.count(), 0)
