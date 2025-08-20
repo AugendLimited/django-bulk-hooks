@@ -2,7 +2,7 @@ import logging
 import threading
 from collections import deque
 
-from django_bulk_hooks.registry import get_hooks, register_hook
+from django_bulk_hooks.registry import register_hook
 
 logger = logging.getLogger(__name__)
 
@@ -108,16 +108,11 @@ class Hook(metaclass=HookMeta):
         old_records: list = None,
         **kwargs,
     ) -> None:
-        queue = get_hook_queue()
-        queue.append((cls, event, model, new_records, old_records, kwargs))
-
-        if len(queue) > 1:
-            return  # nested call, will be processed by outermost
-
-        # only outermost handle will process the queue
-        while queue:
-            cls_, event_, model_, new_, old_, kw_ = queue.popleft()
-            cls_._process(event_, model_, new_, old_, **kw_)
+        """
+        Legacy entrypoint; delegate to the unified executor in engine.run.
+        """
+        from django_bulk_hooks.engine import run as run_engine
+        run_engine(model, event, new_records or [], old_records or None, ctx=kwargs.get("ctx"))
 
     @classmethod
     def _process(
@@ -128,52 +123,11 @@ class Hook(metaclass=HookMeta):
         old_records,
         **kwargs,
     ):
-        hook_vars.depth += 1
-        hook_vars.new = new_records
-        hook_vars.old = old_records
-        hook_vars.event = event
-        hook_vars.model = model
-
-        hooks = get_hooks(model, event)
-
-        def _execute():
-            new_local = new_records or []
-            old_local = old_records or []
-            if len(old_local) < len(new_local):
-                old_local += [None] * (len(new_local) - len(old_local))
-
-            for handler_cls, method_name, condition, priority in hooks:
-                if condition is not None:
-                    checks = [
-                        condition.check(n, o) for n, o in zip(new_local, old_local)
-                    ]
-                    if not any(checks):
-                        continue
-
-                handler = handler_cls()
-                method = getattr(handler, method_name)
-
-                try:
-                    method(
-                        new_records=new_local,
-                        old_records=old_local,
-                        **kwargs,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Error in hook %s.%s", handler_cls.__name__, method_name
-                    )
-                    # Re-raise the exception to ensure proper error handling
-                    raise
-
-        try:
-            _execute()
-        finally:
-            hook_vars.new = None
-            hook_vars.old = None
-            hook_vars.event = None
-            hook_vars.model = None
-            hook_vars.depth -= 1
+        """
+        Legacy internal; delegate to engine.run to avoid divergence.
+        """
+        from django_bulk_hooks.engine import run as run_engine
+        run_engine(model, event, new_records or [], old_records or None, ctx=kwargs.get("ctx"))
 
 
 # Create a global Hook instance for context access

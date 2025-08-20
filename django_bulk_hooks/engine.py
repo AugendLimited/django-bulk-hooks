@@ -2,11 +2,24 @@ import logging
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.conf import settings
 
 from django_bulk_hooks.registry import get_hooks
 from django_bulk_hooks.handler import hook_vars
 
 logger = logging.getLogger(__name__)
+
+
+class AggregatedHookError(Exception):
+    """Raised when multiple hook handlers fail under best-effort policy."""
+
+    def __init__(self, errors):
+        self.errors = errors
+        message_lines = [
+            "Multiple hook errors occurred:",
+            *(f"- {ctx}: {exc}" for ctx, exc in errors),
+        ]
+        super().__init__("\n".join(message_lines))
 
 
 def run(model_cls, event, new_records, old_records=None, ctx=None):
@@ -54,16 +67,35 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
 
     def _execute():
         hook_vars.depth += 1
-        hook_vars.new = new_records
-        hook_vars.old = old_records
         hook_vars.event = event
-        hook_vars.model = model_cls
 
         try:
-            # Align old_records length with new_records for safe zipping
-            local_old = old_records or []
-            if len(local_old) < len(new_records):
-                local_old = local_old + [None] * (len(new_records) - len(local_old))
+            # Build deterministic pairing of new and old by primary key when possible
+            def pair_records(new_list, old_list):
+                if not old_list:
+                    # No old records; pair each new with None
+                    return [(n, None) for n in new_list]
+
+                # If all new have PKs, align by PK preserving new order
+                if all(getattr(n, "pk", None) is not None for n in new_list):
+                    old_by_pk = {getattr(o, "pk", None): o for o in old_list if o is not None}
+                    pairs = []
+                    for n in new_list:
+                        pk = getattr(n, "pk", None)
+                        pairs.append((n, old_by_pk.get(pk)))
+                    return pairs
+
+                # Fallback: best-effort positional pairing (create flows etc.)
+                pairs = []
+                for idx, n in enumerate(new_list):
+                    o = old_list[idx] if idx < len(old_list) else None
+                    pairs.append((n, o))
+                return pairs
+
+            pairs = pair_records(new_records, old_records or [])
+
+            failure_policy = getattr(settings, "BULK_HOOKS_FAILURE_POLICY", "fail_fast")
+            collected_errors = []
 
             for handler_cls, method_name, condition, priority in hooks:
                 try:
@@ -78,10 +110,10 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
                     )
                     continue
 
-                # Condition filtering per record
+                # Condition filtering per record using the deterministic pairs
                 to_process_new = []
                 to_process_old = []
-                for new_obj, old_obj in zip(new_records, local_old, strict=True):
+                for new_obj, old_obj in pairs:
                     if not condition:
                         to_process_new.append(new_obj)
                         to_process_old.append(old_obj)
@@ -105,21 +137,22 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
                 try:
                     func(
                         new_records=to_process_new,
-                        old_records=to_process_old
-                        if any(x is not None for x in to_process_old)
-                        else None,
+                        old_records=to_process_old if any(x is not None for x in to_process_old) else None,
                     )
-                except Exception:
+                except Exception as e:
                     logger.exception(
                         "Error in hook %s.%s", handler_cls.__name__, method_name
                     )
-                    # Re-raise to ensure proper transactional behavior
+                    if failure_policy == "best_effort":
+                        collected_errors.append((f"{handler_cls.__name__}.{method_name}", e))
+                        continue
+                    # fail_fast
                     raise
+
+            if collected_errors:
+                raise AggregatedHookError(collected_errors)
         finally:
-            hook_vars.new = None
-            hook_vars.old = None
             hook_vars.event = None
-            hook_vars.model = None
             hook_vars.depth -= 1
 
     # Execute immediately so AFTER_* runs within the transaction.

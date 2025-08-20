@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 # Key: (ModelClass, event)
 # Value: list of tuples (handler_cls, method_name, condition_callable, priority)
 _hooks: Dict[Tuple[type, str], List[Tuple[type, str, Callable, int]]] = {}
+_registration_counter = 0  # secondary stable ordering for tie-breaks
 
 # Registry lock for thread-safety during registration and clearing
 _lock = threading.RLock()
@@ -43,6 +44,8 @@ def register_hook(
     event = str(event)
 
     with _lock:
+        global _registration_counter
+        _registration_counter += 1
         key = (model, event)
         hooks = _hooks.setdefault(key, [])
 
@@ -58,10 +61,11 @@ def register_hook(
             )
             return
 
-        # Add the hook
+        # Add the hook (append preserves registration order)
         hooks.append((handler_cls, method_name, condition, priority))
 
         # Sort by priority (highest numbers execute first)
+        # Stable sort by priority (desc) and then by original registration order (stable append)
         def sort_key(hook_info: Tuple[type, str, Callable, int]) -> int:
             p = hook_info[3]
             return p.value if hasattr(p, "value") else int(p)

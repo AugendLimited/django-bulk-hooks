@@ -129,6 +129,17 @@ def bulk_hook(model_cls: type, event: str, when: Optional[Callable] = None, prio
         priority: Optional priority for hook execution order
     """
     def decorator(func: Callable):
+        # Deprecation: prefer @hook(event, model=...) on a Hook subclass
+        try:
+            import warnings
+            warnings.warn(
+                "bulk_hook is deprecated; use @hook(event, model=..., condition=..., priority=...) on a Hook subclass",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        except Exception:
+            pass
+
         # Create a simple handler class for the function
         class FunctionHandler:
             def __init__(self):

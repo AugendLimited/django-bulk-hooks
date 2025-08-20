@@ -56,10 +56,11 @@ class HookModelMixin(models.Model):
                 run(self.__class__, VALIDATE_CREATE, [self], ctx=ctx)
 
     def save(self, *args, bypass_hooks=False, **kwargs):
-        # If bypass_hooks is True, use base manager to avoid triggering hooks
+        # If bypass_hooks is True, call the parent save directly within a bypass context
         if bypass_hooks:
             logger.debug(f"save() called with bypass_hooks=True for {self.__class__.__name__} pk={self.pk}")
-            return self._base_manager.save(self, *args, **kwargs)
+            with HookContext(self.__class__, bypass_hooks=True):
+                return super().save(*args, **kwargs)
 
         # Only create a new transaction if we're not already in one
         # This allows for proper nested transaction handling
@@ -118,9 +119,10 @@ class HookModelMixin(models.Model):
         return self
 
     def delete(self, *args, bypass_hooks=False, **kwargs):
-        # If bypass_hooks is True, use base manager to avoid triggering hooks
+        # If bypass_hooks is True, call the parent delete directly within a bypass context
         if bypass_hooks:
-            return self._base_manager.delete(self, *args, **kwargs)
+            with HookContext(self.__class__, bypass_hooks=True):
+                return super().delete(*args, **kwargs)
 
         # Only create a new transaction if we're not already in one
         # This allows for proper nested transaction handling
