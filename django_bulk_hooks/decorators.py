@@ -1,18 +1,28 @@
+"""
+Decorators for defining and optimizing hook handlers.
+
+Notes:
+- Hook registration occurs at import time; importing modules that define Hook
+  subclasses or use @hook will register handlers in the global registry.
+- The preload helpers below are safe, in-place optimizations to avoid N+1s.
+"""
+
 import inspect
 from functools import wraps
+from typing import Any, Callable, Optional
 
 from django.core.exceptions import FieldDoesNotExist
 from django_bulk_hooks.enums import DEFAULT_PRIORITY
 from django_bulk_hooks.registry import register_hook
 
 
-def hook(event, *, model, condition=None, priority=DEFAULT_PRIORITY):
+def hook(event: str, *, model: type, condition: Optional[Callable] = None, priority: int = DEFAULT_PRIORITY):
     """
     Decorator to annotate a method with multiple hooks hook registrations.
     If no priority is provided, uses Priority.NORMAL (50).
     """
 
-    def decorator(fn):
+    def decorator(fn: Callable):
         if not hasattr(fn, "hooks_hooks"):
             fn.hooks_hooks = []
         fn.hooks_hooks.append((model, event, condition, priority))
@@ -21,7 +31,7 @@ def hook(event, *, model, condition=None, priority=DEFAULT_PRIORITY):
     return decorator
 
 
-def select_related(*related_fields):
+def select_related(*related_fields: str):
     """
     Decorator that preloads related fields in-place on `new_records`, before the hook logic runs.
 
@@ -30,11 +40,14 @@ def select_related(*related_fields):
     - Populates Django's relation cache to avoid extra queries
     """
 
-    def decorator(func):
+    def decorator(func: Callable):
+        # No-op if no fields specified
+        if not related_fields:
+            return func
         sig = inspect.signature(func)
 
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any):
             bound = sig.bind_partial(*args, **kwargs)
             bound.apply_defaults()
 
@@ -105,7 +118,7 @@ def select_related(*related_fields):
     return decorator
 
 
-def bulk_hook(model_cls, event, when=None, priority=None):
+def bulk_hook(model_cls: type, event: str, when: Optional[Callable] = None, priority: Optional[int] = None):
     """
     Decorator to register a bulk hook for a model.
     
@@ -115,13 +128,13 @@ def bulk_hook(model_cls, event, when=None, priority=None):
         when: Optional condition for when the hook should run
         priority: Optional priority for hook execution order
     """
-    def decorator(func):
+    def decorator(func: Callable):
         # Create a simple handler class for the function
         class FunctionHandler:
             def __init__(self):
                 self.func = func
             
-            def handle(self, new_instances, original_instances):
+            def handle(self, new_instances: list, original_instances: Optional[list]):
                 return self.func(new_instances, original_instances)
         
         # Register the hook using the registry
@@ -134,4 +147,83 @@ def bulk_hook(model_cls, event, when=None, priority=None):
             priority=priority or DEFAULT_PRIORITY,
         )
         return func
+    return decorator
+
+
+def prefetch_related(*related_fields: str):
+    """
+    Decorator that prefetches related collections on `new_records` in-place,
+    populating Django's prefetch cache to avoid extra queries in hooks.
+
+    - Supports many-to-many and one-to-many relationships
+    - Preserves instance identity; does not replace objects
+    - Uses the base manager to avoid recursive hook triggering
+    """
+
+    def decorator(func: Callable):
+        # No-op if no fields specified
+        if not related_fields:
+            return func
+
+        sig = inspect.signature(func)
+
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any):
+            bound = sig.bind_partial(*args, **kwargs)
+            bound.apply_defaults()
+
+            if "new_records" not in bound.arguments:
+                raise TypeError(
+                    "@prefetch_related requires a 'new_records' argument in the decorated function"
+                )
+
+            new_records = bound.arguments["new_records"]
+
+            if not isinstance(new_records, list):
+                raise TypeError(
+                    f"@prefetch_related expects a list of model instances, got {type(new_records)}"
+                )
+
+            if not new_records:
+                return func(*args, **kwargs)
+
+            model_cls = new_records[0].__class__
+            ids_to_fetch = [obj.pk for obj in new_records if getattr(obj, "pk", None)]
+
+            if ids_to_fetch:
+                # Validate fields (no dotted notation)
+                for field in related_fields:
+                    if "." in field:
+                        raise ValueError(
+                            f"@prefetch_related does not support nested fields like '{field}'"
+                        )
+
+                fetched_map = {
+                    obj.pk: obj
+                    for obj in (
+                        model_cls._base_manager.filter(pk__in=ids_to_fetch)
+                        .prefetch_related(*related_fields)
+                    )
+                }
+
+                for obj in new_records:
+                    preloaded = fetched_map.get(obj.pk)
+                    if preloaded is None:
+                        continue
+                    # Copy prefetch cache entries from the preloaded instance
+                    src_cache = getattr(preloaded, "_prefetched_objects_cache", {})
+                    if not src_cache:
+                        continue
+                    dst_cache = getattr(obj, "_prefetched_objects_cache", None)
+                    if dst_cache is None:
+                        obj._prefetched_objects_cache = {}
+                        dst_cache = obj._prefetched_objects_cache
+                    for field in related_fields:
+                        if field in src_cache and field not in dst_cache:
+                            dst_cache[field] = src_cache[field]
+
+            return func(*bound.args, **bound.kwargs)
+
+        return wrapper
+
     return decorator

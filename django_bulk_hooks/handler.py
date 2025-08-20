@@ -2,8 +2,6 @@ import logging
 import threading
 from collections import deque
 
-from django.db import transaction
-
 from django_bulk_hooks.registry import get_hooks, register_hook
 
 logger = logging.getLogger(__name__)
@@ -77,9 +75,6 @@ class HookMeta(type):
                 attr = getattr(cls, attr_name)
                 if callable(attr) and hasattr(attr, "hooks_hooks"):
                     for model_cls, event, condition, priority in attr.hooks_hooks:
-                        # Create a unique key for this hook registration
-                        key = (model_cls, event, cls, attr_name)
-                        
                         # Register the hook
                         register_hook(
                             model=model_cls,
@@ -171,12 +166,8 @@ class Hook(metaclass=HookMeta):
                     # Re-raise the exception to ensure proper error handling
                     raise
 
-        conn = transaction.get_connection()
         try:
-            if conn.in_atomic_block and event.startswith("after_"):
-                transaction.on_commit(_execute)
-            else:
-                _execute()
+            _execute()
         finally:
             hook_vars.new = None
             hook_vars.old = None
