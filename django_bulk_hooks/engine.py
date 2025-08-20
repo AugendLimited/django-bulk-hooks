@@ -10,6 +10,13 @@ logger = logging.getLogger(__name__)
 def run(model_cls, event, new_records, old_records=None, ctx=None):
     """
     Run hooks for a given model, event, and records.
+    
+    Args:
+        model_cls: The Django model class
+        event: The hook event (e.g., 'before_create', 'after_update')
+        new_records: List of new/updated records
+        old_records: List of original records (for comparison)
+        ctx: Optional hook context
     """
     if not new_records:
         return
@@ -20,14 +27,11 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
     if not hooks:
         return
 
-    import traceback
-
-    stack = traceback.format_stack()
-    logger.debug(f"engine.run {model_cls.__name__}.{event} {len(new_records)} records")
+    logger.debug(f"Running {len(hooks)} hooks for {model_cls.__name__}.{event} ({len(new_records)} records)")
     
     # Check if we're in a bypass context
     if ctx and hasattr(ctx, 'bypass_hooks') and ctx.bypass_hooks:
-        logger.debug("engine.run bypassed")
+        logger.debug("Hook execution bypassed")
         return
 
     # For BEFORE_* events, run model.clean() first for validation
@@ -39,11 +43,16 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
                 logger.error("Validation failed for %s: %s", instance, e)
                 raise
 
-    # Process hooks
+    # Process hooks in priority order
     for handler_cls, method_name, condition, priority in hooks:
-        logger.debug(f"Processing {handler_cls.__name__}.{method_name}")
-        handler_instance = handler_cls()
-        func = getattr(handler_instance, method_name)
+        logger.debug(f"Processing {handler_cls.__name__}.{method_name} (priority: {priority})")
+        
+        try:
+            handler_instance = handler_cls()
+            func = getattr(handler_instance, method_name)
+        except Exception as e:
+            logger.error(f"Failed to instantiate {handler_cls.__name__}: {e}")
+            continue
 
         to_process_new = []
         to_process_old = []
@@ -57,10 +66,14 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
                 to_process_new.append(new)
                 to_process_old.append(original)
             else:
-                condition_result = condition.check(new, original)
-                if condition_result:
-                    to_process_new.append(new)
-                    to_process_old.append(original)
+                try:
+                    condition_result = condition.check(new, original)
+                    if condition_result:
+                        to_process_new.append(new)
+                        to_process_old.append(original)
+                except Exception as e:
+                    logger.error(f"Condition check failed for {handler_cls.__name__}.{method_name}: {e}")
+                    continue
 
         if to_process_new:
             logger.debug(f"Executing {handler_cls.__name__}.{method_name} for {len(to_process_new)} records")
@@ -70,5 +83,5 @@ def run(model_cls, event, new_records, old_records=None, ctx=None):
                     old_records=to_process_old if any(to_process_old) else None,
                 )
             except Exception as e:
-                logger.debug(f"Hook execution failed: {e}")
+                logger.error(f"Hook execution failed in {handler_cls.__name__}.{method_name}: {e}")
                 raise

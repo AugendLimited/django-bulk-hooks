@@ -40,20 +40,36 @@ from django_bulk_hooks.conditions import WhenFieldHasChanged
 from .models import Account
 
 class AccountHooks(Hook):
-    @hook(AFTER_UPDATE, model=Account, condition=WhenFieldHasChanged("balance"))
-    def log_balance_change(self, new_records, old_records):
-        print("Accounts updated:", [a.pk for a in new_records])
-    
-    @hook(BEFORE_CREATE, model=Account)
-    def before_create(self, new_records, old_records):
-        for account in new_records:
-            if account.balance < 0:
-                raise ValueError("Account cannot have negative balance")
-    
-    @hook(AFTER_DELETE, model=Account)
-    def after_delete(self, new_records, old_records):
-        print("Accounts deleted:", [a.pk for a in old_records])
+    @hook(AFTER_UPDATE, condition=WhenFieldHasChanged('balance'))
+    def _notify_balance_change(self, new_records, old_records, **kwargs):
+        for new_record, old_record in zip(new_records, old_records):
+            if old_record and new_record.balance != old_record.balance:
+                print(f"Balance changed from {old_record.balance} to {new_record.balance}")
 ```
+
+### Bulk Operations with Hooks
+
+```python
+# For complete hook execution, use the update() method
+accounts = Account.objects.filter(active=True)
+accounts.update(balance=1000)  # Runs all hooks automatically
+
+# For bulk operations with hooks
+accounts = Account.objects.filter(active=True)
+instances = list(accounts)
+
+# bulk_update now runs complete hook cycle by default
+accounts.bulk_update(instances, ['balance'])  # Runs VALIDATE → BEFORE → DB update → AFTER
+
+# To skip hooks (for performance or when called from update())
+accounts.bulk_update(instances, ['balance'], bypass_hooks=True)
+```
+
+### Understanding Hook Execution
+
+- **`update()` method**: Runs complete hook cycle (VALIDATE → BEFORE → DB update → AFTER)
+- **`bulk_update()` method**: Runs complete hook cycle (VALIDATE → BEFORE → DB update → AFTER)
+- **`bypass_hooks=True`**: Skips all hooks for performance or to prevent double execution
 
 ## 🛠 Supported Hook Events
 

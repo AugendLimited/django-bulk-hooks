@@ -1,11 +1,8 @@
 import logging
 
 from django.db import models, transaction
-from django.db.models import AutoField, Case, Field, Value, When
-
+from django.db.models import AutoField, Case, Value, When
 from django_bulk_hooks import engine
-
-logger = logging.getLogger(__name__)
 from django_bulk_hooks.constants import (
     AFTER_CREATE,
     AFTER_DELETE,
@@ -19,6 +16,8 @@ from django_bulk_hooks.constants import (
 )
 from django_bulk_hooks.context import HookContext
 
+logger = logging.getLogger(__name__)
+
 
 class HookQuerySetMixin:
     """
@@ -28,11 +27,23 @@ class HookQuerySetMixin:
 
     @transaction.atomic
     def delete(self):
+        """
+        Delete objects from the database with complete hook support.
+
+        This method runs the complete hook cycle:
+        VALIDATE_DELETE → BEFORE_DELETE → DB delete → AFTER_DELETE
+        """
         objs = list(self)
         if not objs:
             return 0
 
         model_cls = self.model
+
+        # Validate that all objects have primary keys
+        for obj in objs:
+            if obj.pk is None:
+                raise ValueError("Cannot delete objects without primary keys")
+
         ctx = HookContext(model_cls)
 
         # Run validation hooks first
@@ -51,6 +62,17 @@ class HookQuerySetMixin:
 
     @transaction.atomic
     def update(self, **kwargs):
+        """
+        Update objects with field values and run complete hook cycle.
+        
+        This method runs the complete hook cycle for all updates:
+        VALIDATE_UPDATE → BEFORE_UPDATE → DB update → AFTER_UPDATE
+        
+        Supports both simple field updates and complex expressions (Subquery, Case, etc.).
+        """
+        # Extract custom parameters
+        bypass_hooks = kwargs.pop('bypass_hooks', False)
+        
         instances = list(self)
         if not instances:
             return 0
@@ -58,109 +80,49 @@ class HookQuerySetMixin:
         model_cls = self.model
         pks = [obj.pk for obj in instances]
 
-        # Load originals for hook comparison and ensure they match the order of instances
-        # Use the base manager to avoid recursion
+        # Load originals for hook comparison
         original_map = {
             obj.pk: obj for obj in model_cls._base_manager.filter(pk__in=pks)
         }
         originals = [original_map.get(obj.pk) for obj in instances]
 
-        # Check if any of the update values are complex database expressions (Subquery, Case, etc.)
+        # Check if any of the update values are complex database expressions
         has_subquery = any(
-            (hasattr(value, "query") and hasattr(value, "resolve_expression"))
-            or hasattr(
-                value, "resolve_expression"
-            )  # This catches Case, F expressions, etc.
+            (hasattr(value, "query") and hasattr(value.query, "model"))
+            or (hasattr(value, "get_source_expressions") and value.get_source_expressions())
             for value in kwargs.values()
         )
 
-        # Also check if any of the instances have complex expressions in their attributes
-        # This can happen when bulk_update creates Case expressions and applies them to instances
-        if not has_subquery and instances:
-            for instance in instances:
-                for field_name in kwargs.keys():
-                    if hasattr(instance, field_name):
-                        field_value = getattr(instance, field_name)
-                        if hasattr(field_value, "resolve_expression"):
-                            has_subquery = True
-                            break
-                if has_subquery:
-                    break
+        # Run hooks only if not bypassed
+        if not bypass_hooks:
+            # Run VALIDATE_UPDATE hooks
+            engine.run(model_cls, VALIDATE_UPDATE, instances, originals, HookContext(model_cls))
+            
+            # Run BEFORE_UPDATE hooks
+            engine.run(model_cls, BEFORE_UPDATE, instances, originals, HookContext(model_cls))
 
-        # Check if we're in a bulk operation context to prevent double hook execution
-        from django_bulk_hooks.context import get_bypass_hooks
-
-        current_bypass_hooks = get_bypass_hooks()
-
-        # Apply field updates to instances for all cases (needed for hook inspection)
-        for obj in instances:
-            for field, value in kwargs.items():
-                # For subquery fields, set the original Subquery object temporarily
-                # We'll resolve it after database update if needed
-                setattr(obj, field, value)
-
-        # If we're in a bulk operation context, skip hooks to prevent double execution
-        if current_bypass_hooks:
-            ctx = HookContext(model_cls, bypass_hooks=True)
-            # For bulk operations without hooks, execute update
-            update_count = super().update(**kwargs)
+        if has_subquery:
+            # For complex expressions, use Django's native update
+            # This handles Subquery, Case, F expressions, etc. correctly
+            result = super().update(**kwargs)
         else:
-            ctx = HookContext(model_cls, bypass_hooks=False)
+            # For simple field updates, apply changes to instances first
+            for obj in instances:
+                for field, value in kwargs.items():
+                    setattr(obj, field, value)
 
-            # For subquery cases, we need special handling
-            if has_subquery:
-                # Run validation hooks first with Subquery objects (if validation doesn't access them)
-                try:
-                    engine.run(
-                        model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx
-                    )
-                except (TypeError, ValueError, AttributeError) as e:
-                    # If validation fails due to Subquery/Case comparison, skip validation for complex updates
-                    # This is a limitation - validation hooks cannot easily work with unresolved database expressions
-                    logger.warning(
-                        f"Skipping validation hooks for complex update due to: {e}"
-                    )
+            # Perform database update using Django's native bulk_update
+            # We use the base manager to avoid recursion
+            base_manager = model_cls._base_manager
+            fields_to_update = list(kwargs.keys())
+            base_manager.bulk_update(instances, fields_to_update)
+            result = len(instances)
 
-                # Execute the database update first to compute subquery values
-                update_count = super().update(**kwargs)
-
-                # Refresh instances to get computed subquery values BEFORE running BEFORE hooks
-                # Use the model's default manager to ensure queryable properties are properly handled
-                refreshed_instances = {
-                    obj.pk: obj for obj in model_cls.objects.filter(pk__in=pks)
-                }
-
-                # Update instances in memory with computed values
-                for instance in instances:
-                    if instance.pk in refreshed_instances:
-                        refreshed_instance = refreshed_instances[instance.pk]
-                        # Update all fields except primary key with the computed values
-                        for field in model_cls._meta.fields:
-                            if field.name != "id":
-                                setattr(
-                                    instance,
-                                    field.name,
-                                    getattr(refreshed_instance, field.name),
-                                )
-
-                # Now run BEFORE_UPDATE hooks with resolved values
-                # Note: This is a trade-off - BEFORE hooks run after DB update for subquery cases
-                engine.run(model_cls, BEFORE_UPDATE, instances, originals, ctx=ctx)
-            else:
-                # Normal case without subqueries - run hooks in proper order
-                # Run validation hooks first
-                engine.run(model_cls, VALIDATE_UPDATE, instances, originals, ctx=ctx)
-                # Then run BEFORE_UPDATE hooks
-                engine.run(model_cls, BEFORE_UPDATE, instances, originals, ctx=ctx)
-
-                # Execute update
-                update_count = super().update(**kwargs)
-
-        # Run AFTER_UPDATE hooks only for standalone updates
-        if not current_bypass_hooks:
-            engine.run(model_cls, AFTER_UPDATE, instances, originals, ctx=ctx)
-
-        return update_count
+        # Run AFTER_UPDATE hooks only if not bypassed
+        if not bypass_hooks:
+            engine.run(model_cls, AFTER_UPDATE, instances, originals, HookContext(model_cls))
+        
+        return result
 
     @transaction.atomic
     def bulk_create(
@@ -175,34 +137,31 @@ class HookQuerySetMixin:
         bypass_validation=False,
     ):
         """
-        Insert each of the instances into the database. Behaves like Django's bulk_create,
-        but supports multi-table inheritance (MTI) models and hooks. All arguments are supported and
-        passed through to the correct logic. For MTI, only a subset of options may be supported.
+        Insert each of the instances into the database with complete hook support.
+
+        This method runs the complete hook cycle:
+        VALIDATE_CREATE → BEFORE_CREATE → DB create → AFTER_CREATE
+
+        Behaves like Django's bulk_create but supports multi-table inheritance (MTI)
+        models and hooks. All arguments are supported and passed through to the correct logic.
         """
         model_cls = self.model
 
-        # When you bulk insert you don't get the primary keys back (if it's an
-        # autoincrement, except if can_return_rows_from_bulk_insert=True), so
-        # you can't insert into the child tables which references this. There
-        # are two workarounds:
-        # 1) This could be implemented if you didn't have an autoincrement pk
-        # 2) You could do it by doing O(n) normal inserts into the parent
-        #    tables to get the primary keys back and then doing a single bulk
-        #    insert into the childmost table.
-        # We currently set the primary keys on the objects when using
-        # PostgreSQL via the RETURNING ID clause. It should be possible for
-        # Oracle as well, but the semantics for extracting the primary keys is
-        # trickier so it's not done yet.
-        if batch_size is not None and batch_size <= 0:
-            raise ValueError("Batch size must be a positive integer.")
+        # Validate inputs
+        if not isinstance(objs, (list, tuple)):
+            raise TypeError("objs must be a list or tuple")
 
         if not objs:
             return objs
 
         if any(not isinstance(obj, model_cls) for obj in objs):
             raise TypeError(
-                f"bulk_create expected instances of {model_cls.__name__}, but got {set(type(obj).__name__ for obj in objs)}"
+                f"bulk_create expected instances of {model_cls.__name__}, "
+                f"but got {set(type(obj).__name__ for obj in objs)}"
             )
+
+        if batch_size is not None and batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer.")
 
         # Check for MTI - if we detect multi-table inheritance, we need special handling
         # This follows Django's approach: check that the parents share the same concrete model
@@ -217,12 +176,12 @@ class HookQuerySetMixin:
 
         # Fire hooks before DB ops
         if not bypass_hooks:
-            ctx = HookContext(model_cls, bypass_hooks=False)  # Pass bypass_hooks
+            ctx = HookContext(model_cls, bypass_hooks=False)
             if not bypass_validation:
                 engine.run(model_cls, VALIDATE_CREATE, objs, ctx=ctx)
             engine.run(model_cls, BEFORE_CREATE, objs, ctx=ctx)
         else:
-            ctx = HookContext(model_cls, bypass_hooks=True)  # Pass bypass_hooks
+            ctx = HookContext(model_cls, bypass_hooks=True)
             logger.debug("bulk_create bypassed hooks")
 
         # For MTI models, we need to handle them specially
@@ -266,91 +225,104 @@ class HookQuerySetMixin:
         self, objs, fields, bypass_hooks=False, bypass_validation=False, **kwargs
     ):
         """
-        Bulk update objects in the database with MTI support.
+        Bulk update objects in the database with complete hook support.
+
+        This method always runs the complete hook cycle:
+        VALIDATE_UPDATE → BEFORE_UPDATE → DB update → AFTER_UPDATE
+
+        Args:
+            objs: List of model instances to update
+            fields: List of field names to update
+            bypass_hooks: DEPRECATED - kept for backward compatibility only
+            bypass_validation: DEPRECATED - kept for backward compatibility only
+            **kwargs: Additional arguments passed to Django's bulk_update
         """
         model_cls = self.model
 
         if not objs:
             return []
 
-        if any(not isinstance(obj, model_cls) for obj in objs):
-            raise TypeError(
-                f"bulk_update expected instances of {model_cls.__name__}, but got {set(type(obj).__name__ for obj in objs)}"
+        # Validate inputs
+        if not isinstance(objs, (list, tuple)):
+            raise TypeError("objs must be a list or tuple")
+
+        if not isinstance(fields, (list, tuple)):
+            raise TypeError("fields must be a list or tuple")
+
+        if not objs:
+            return []
+
+        if not fields:
+            raise ValueError("fields cannot be empty")
+
+        # Validate that all objects are instances of the model
+        for obj in objs:
+            if not isinstance(obj, model_cls):
+                raise TypeError(
+                    f"Expected instances of {model_cls.__name__}, got {type(obj).__name__}"
+                )
+            if obj.pk is None:
+                raise ValueError("All objects must have a primary key")
+
+        # Load originals for hook comparison
+        pks = [obj.pk for obj in objs]
+        original_map = {
+            obj.pk: obj for obj in model_cls._base_manager.filter(pk__in=pks)
+        }
+        originals = [original_map.get(obj.pk) for obj in objs]
+
+        # Run VALIDATE_UPDATE hooks
+        if not bypass_validation:
+            engine.run(
+                model_cls, VALIDATE_UPDATE, objs, originals, HookContext(model_cls)
             )
 
-        logger.debug(
-            f"bulk_update {model_cls.__name__} bypass_hooks={bypass_hooks} objs={len(objs)}"
-        )
-
-        # Check for MTI
-        is_mti = False
-        for parent in model_cls._meta.all_parents:
-            if parent._meta.concrete_model is not model_cls._meta.concrete_model:
-                is_mti = True
-                break
-
+        # Run BEFORE_UPDATE hooks
         if not bypass_hooks:
-            logger.debug("bulk_update: hooks will run in update()")
-            ctx = HookContext(model_cls, bypass_hooks=False)
-            originals = [None] * len(objs)  # Placeholder for after_update call
-        else:
-            logger.debug("bulk_update: hooks bypassed")
-            ctx = HookContext(model_cls, bypass_hooks=True)
-            originals = [None] * len(
-                objs
-            )  # Ensure originals is defined for after_update call
+            engine.run(
+                model_cls, BEFORE_UPDATE, objs, originals, HookContext(model_cls)
+            )
 
-        # Handle auto_now fields like Django's update_or_create does
-        fields_set = set(fields)
-        pk_fields = model_cls._meta.pk_fields
-        for field in model_cls._meta.local_concrete_fields:
-            # Only add auto_now fields (like updated_at) that aren't already in the fields list
-            # Don't include auto_now_add fields (like created_at) as they should only be set on creation
-            if hasattr(field, "auto_now") and field.auto_now:
-                if field.name not in fields_set and field.name not in pk_fields:
-                    fields_set.add(field.name)
-                    if field.name != field.attname:
-                        fields_set.add(field.attname)
-        fields = list(fields_set)
+        # Perform database update using Django's native bulk_update
+        # We use the base manager to avoid recursion
+        base_manager = model_cls._base_manager
+        result = base_manager.bulk_update(objs, fields, **kwargs)
 
-        # Handle MTI models differently
-        if is_mti:
-            result = self._mti_bulk_update(objs, fields, **kwargs)
-        else:
-            # For single-table models, use Django's built-in bulk_update
-            django_kwargs = {
-                k: v
-                for k, v in kwargs.items()
-                if k not in ["bypass_hooks", "bypass_validation"]
-            }
-            logger.debug("Calling Django bulk_update")
-            result = super().bulk_update(objs, fields, **django_kwargs)
-            logger.debug(f"Django bulk_update done: {result}")
-
-        # Note: We don't run AFTER_UPDATE hooks here to prevent double execution
-        # The update() method will handle all hook execution based on thread-local state
+        # Run AFTER_UPDATE hooks
         if not bypass_hooks:
-            logger.debug("bulk_update: skipping AFTER_UPDATE (update() will handle)")
-        else:
-            logger.debug("bulk_update: hooks bypassed")
+            engine.run(model_cls, AFTER_UPDATE, objs, originals, HookContext(model_cls))
 
         return result
 
     @transaction.atomic
     def bulk_delete(self, objs, **kwargs):
         """
-        Delete the given objects from the database with hook support.
+        Delete the given objects from the database with complete hook support.
+
+        This method runs the complete hook cycle:
+        VALIDATE_DELETE → BEFORE_DELETE → DB delete → AFTER_DELETE
 
         This is a convenience method that provides a bulk_delete interface
         similar to bulk_create and bulk_update.
         """
-        logger.debug(f"bulk_delete called with {len(objs)} objects")
+        model_cls = self.model
 
         # Extract custom kwargs
         bypass_hooks = kwargs.pop("bypass_hooks", False)
 
+        # Validate inputs
+        if not isinstance(objs, (list, tuple)):
+            raise TypeError("objs must be a list or tuple")
+
         if not objs:
             return 0
+
+        # Validate that all objects are instances of the model
+        for obj in objs:
+            if not isinstance(obj, model_cls):
+                raise TypeError(
+                    f"Expected instances of {model_cls.__name__}, got {type(obj).__name__}"
+                )
 
         # Get the pks to delete
         pks = [obj.pk for obj in objs if obj.pk is not None]

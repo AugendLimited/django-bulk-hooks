@@ -65,24 +65,33 @@ Hook = HookContextState()
 
 
 class HookMeta(type):
-    _registered = set()
-
+    """Metaclass that automatically registers hooks when Hook classes are defined."""
+    
     def __new__(mcs, name, bases, namespace):
         cls = super().__new__(mcs, name, bases, namespace)
+        
+        # Register hooks for this class
         for method_name, method in namespace.items():
             if hasattr(method, "hooks_hooks"):
                 for model_cls, event, condition, priority in method.hooks_hooks:
+                    # Create a unique key for this hook registration
                     key = (model_cls, event, cls, method_name)
-                    if key not in HookMeta._registered:
-                        register_hook(
-                            model=model_cls,
-                            event=event,
-                            handler_cls=cls,
-                            method_name=method_name,
-                            condition=condition,
-                            priority=priority,
-                        )
-                        HookMeta._registered.add(key)
+                    
+                    # Register the hook
+                    register_hook(
+                        model=model_cls,
+                        event=event,
+                        handler_cls=cls,
+                        method_name=method_name,
+                        condition=condition,
+                        priority=priority,
+                    )
+                    
+                    logger.debug(
+                        f"Registered hook {cls.__name__}.{method_name} "
+                        f"for {model_cls.__name__}.{event} with priority {priority}"
+                    )
+        
         return cls
 
 
